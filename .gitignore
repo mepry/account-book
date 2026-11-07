@@ -1,0 +1,52 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+
+# 개인 설정 (Expo 계정·패키지 이름·EAS 프로젝트 ID) — app.local.example.json 참고
+app.local.json
+
+# 개인 작업 지시문 (로컬 전용)
+CLAUDE.md
+
+# 백업 파일 (개인 금융 데이터)
+*.db
+*.db-shm
+*.db-wal
