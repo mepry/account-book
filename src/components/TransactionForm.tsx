@@ -512,10 +512,10 @@ export function TransactionForm({ type, target, onClose }: Props) {
       >
         <View style={styles.backdrop}>
           <View style={styles.dialog}>
-            <Text style={styles.dialogTitle}>새 혜택</Text>
+            <Text style={[styles.dialogTitle, styles.noFlex]}>새 혜택</Text>
             <View style={styles.body}>
               <TextInput
-                style={styles.input}
+                style={[styles.input, styles.noFlex]}
                 value={newBenefitName}
                 placeholder="예) 카카오포인트"
                 placeholderTextColor={theme.colors.subText}
@@ -595,6 +595,8 @@ const makeStyles = (t: Theme) =>
       fontSize: 16,
       color: t.colors.text,
     },
+    // 세로로 쌓이는 곳에서는 flex: 1이 높이를 0으로 줄이므로 끈다 (새 혜택 입력창)
+    noFlex: { flex: 0 },
     amount: { textAlign: 'center' },
     amountBox: { justifyContent: 'center', alignItems: 'center' },
     amountBoxOpen: { borderColor: t.colors.primary, borderWidth: 2 },

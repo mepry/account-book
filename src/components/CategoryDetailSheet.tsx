@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ALL_CATEGORIES,
   getCategoryItems,
@@ -55,6 +56,7 @@ const pct = (part: number, whole: number): number => (whole > 0 ? Math.round((pa
  */
 export function CategoryDetailSheet({ target, type, from, to, includeExcluded, filter, onClose, onPressItem, onLongPressItem }: Props) {
   const styles = useStyles(makeStyles);
+  const insets = useSafeAreaInsets();
   const db = useDb();
   const version = useDataVersion();
   // 어느 카테고리 것인지 같이 들고 있어 다른 카테고리를 열 때 이전 내용이 잠깐 보이지 않게 한다
@@ -87,7 +89,7 @@ export function CategoryDetailSheet({ target, type, from, to, includeExcluded, f
   return (
     <Modal visible={target !== null} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <View style={styles.sheet}>
+      <View style={[styles.sheet, { paddingBottom: 16 + insets.bottom }]}>
         <View style={styles.handle} />
         {target ? (
           <>

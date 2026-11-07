@@ -4,6 +4,7 @@
  */
 import { useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { LedgerItem, TxType } from '../db/queries';
 import { formatWon } from '../lib/money';
 import { type Theme } from '../theme';
@@ -54,6 +55,8 @@ export function DaySheet({
 }: Props) {
   const theme = useTheme();
   const styles = useStyles(makeStyles);
+  // 하단 내비게이션 바(홈 버튼)만큼 시트 아래 여백을 더 둔다
+  const insets = useSafeAreaInsets();
   const total = items.filter((i) => !i.excluded).reduce((s, i) => s + i.amount, 0);
   const [paletteFor, setPaletteFor] = useState<string | null>(null);
   const [customEmoji, setCustomEmoji] = useState('');
@@ -69,7 +72,7 @@ export function DaySheet({
   return (
     <Modal visible={date !== null} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <View style={styles.sheet}>
+      <View style={[styles.sheet, { paddingBottom: 16 + insets.bottom }]}>
         <View style={styles.handle} />
         <View style={styles.header}>
           <View style={styles.titleRow}>

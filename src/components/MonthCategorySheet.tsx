@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   getCategoryItems,
   getCategoryTotals,
@@ -52,6 +53,7 @@ function monthRange(ym: string): { from: string; to: string } {
  */
 export function MonthCategorySheet({ ym, type, includeExcluded, filter, onClose, onPressItem, onLongPressItem }: Props) {
   const styles = useStyles(makeStyles);
+  const insets = useSafeAreaInsets();
   const db = useDb();
   const version = useDataVersion();
   // 어느 달 것인지 같이 들고 있어 다른 막대를 눌렀을 때 이전 달 내용이 잠깐 보이지 않게 한다
@@ -81,7 +83,7 @@ export function MonthCategorySheet({ ym, type, includeExcluded, filter, onClose,
   return (
     <Modal visible={ym !== null} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <View style={styles.sheet}>
+      <View style={[styles.sheet, { paddingBottom: 16 + insets.bottom }]}>
         <View style={styles.handle} />
         {ym ? (
           <>
