@@ -1,12 +1,12 @@
 /**
- * 카테고리 도넛 차트. 조각마다 바깥에 "이름 xx%" 캡션을 달고, 캡션이나 조각을 누르면 onPressItem,
+ * 카테고리 도넛 차트. 조각마다 바깥에 "이름 / xx% / 금액" 캡션을 달고, 캡션이나 조각을 누르면 onPressItem,
  * 가운데 총 합계를 누르면 onPressTotal.
  * 0원 카테고리도 0% 캡션으로 보여준다.
  * 지시선과 조각 위치가 정확히 맞도록 react-native-svg로 직접 그린다.
  */
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, G, Line } from 'react-native-svg';
-import { formatNumber } from '../lib/money';
+import { formatNumber, formatWon } from '../lib/money';
 import { hitTestPie, layoutPieLabels, toSlices } from '../lib/pieLabels';
 import { type Theme } from '../theme';
 import { useStyles, useTheme } from '../lib/theme';
@@ -28,9 +28,9 @@ interface Props {
 }
 
 /** 캡션 한 칸 높이 (테두리 상자 + 위아래 간격) */
-const LABEL_HEIGHT = 42;
-/** 캡션 테두리 상자 높이 (이름 + 퍼센트 두 줄) */
-const BOX_HEIGHT = 36;
+const LABEL_HEIGHT = 56;
+/** 캡션 테두리 상자 높이 (이름 + 퍼센트 + 금액 세 줄) */
+const BOX_HEIGHT = 50;
 /** 차트와 캡션 사이 간격 */
 const LABEL_GAP = 18;
 /** 위아래 여백 */
@@ -141,7 +141,7 @@ export function CategoryPie({ items, width, onPressItem, onPressTotal }: Props) 
               style={({ pressed }) => [styles.box, { borderColor: item.color }, pressed && styles.boxPressed]}
               android_ripple={{ color: theme.colors.border, borderless: false, foreground: true }}
               onPress={() => onPressItem(i)}
-              accessibilityLabel={`${item.name} ${slices[i].percent}% 상세 보기`}
+              accessibilityLabel={`${item.name} ${slices[i].percent}% ${formatWon(item.value)} 상세 보기`}
             >
               <View style={[styles.nameRow, !right && { flexDirection: 'row-reverse' }]}>
                 <View style={[styles.dot, { backgroundColor: item.color }]} />
@@ -151,6 +151,13 @@ export function CategoryPie({ items, width, onPressItem, onPressTotal }: Props) 
               </View>
               <Text style={[styles.percent, { textAlign: right ? 'left' : 'right' }, item.value === 0 && styles.zero]}>
                 {slices[i].percent}%
+              </Text>
+              <Text
+                style={[styles.amount, { textAlign: right ? 'left' : 'right' }, item.value === 0 && styles.zero]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+              >
+                {formatWon(item.value)}
               </Text>
             </Pressable>
           </View>
@@ -181,5 +188,6 @@ const makeStyles = (t: Theme) =>
     dot: { width: 8, height: 8, borderRadius: 4 },
     name: { fontSize: 11, lineHeight: 14, color: t.colors.text, flexShrink: 1 },
     percent: { fontSize: 12, lineHeight: 15, fontWeight: '700', color: t.colors.text },
+    amount: { fontSize: 11, lineHeight: 14, color: t.colors.subText },
     zero: { color: t.colors.muted },
   });

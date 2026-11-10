@@ -16,6 +16,9 @@ export const BACKUP_TABLES = [
   'transaction_benefits',
   'app_settings',
   'day_marks',
+  'day_colors',
+  'budget_items',
+  'sms_imports',
 ] as const;
 
 /** 이 앱 백업으로 보려면 꼭 있어야 하는 표 */

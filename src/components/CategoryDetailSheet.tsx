@@ -2,7 +2,7 @@
  * 통계 차트에서 카테고리 캡션·조각을 누르면 아래에서 올라오는 상세 레이어 (가운데 총 합계를 누르면 전체 내역).
  * 카테고리 합계·비율 → 소분류별 합계·비율 → 기간 내 내역 목록. 내역을 누르면 수정 폼을 연다.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -31,6 +31,8 @@ export interface CategoryDetailTarget {
   /** 전체 대비 퍼센트 (정수) */
   percent: number;
   color: string;
+  /** 이 조각만 보기 위한 추가 필터 (결제수단별·하위카테고리별 차트의 조각) */
+  extraFilter?: StatsFilter;
 }
 
 interface Props {
@@ -54,13 +56,24 @@ const pct = (part: number, whole: number): number => (whole > 0 ? Math.round((pa
 /**
  * 카테고리 상세 바텀시트.
  */
-export function CategoryDetailSheet({ target, type, from, to, includeExcluded, filter, onClose, onPressItem, onLongPressItem }: Props) {
+export function CategoryDetailSheet({
+  target,
+  type,
+  from,
+  to,
+  includeExcluded,
+  filter: screenFilter,
+  onClose,
+  onPressItem,
+  onLongPressItem,
+}: Props) {
   const styles = useStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const db = useDb();
   const version = useDataVersion();
   // 어느 카테고리 것인지 같이 들고 있어 다른 카테고리를 열 때 이전 내용이 잠깐 보이지 않게 한다
   const [data, setData] = useState<{ key: string; subs: CategoryTotal[]; items: CategoryItem[] } | null>(null);
+  const filter = useMemo<StatsFilter>(() => ({ ...screenFilter, ...target?.extraFilter }), [screenFilter, target]);
   const key = target ? `${target.id}|${type}|${from}|${to}|${includeExcluded}|${JSON.stringify(filter)}` : '';
 
   useEffect(() => {

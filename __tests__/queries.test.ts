@@ -27,6 +27,9 @@ import {
   getTransactionForEdit,
   saveTransaction,
   searchTransactions,
+  setDayColor,
+  getDayColors,
+  type SearchFilter,
   setDayMark,
   setSetting,
   setTransactionExcluded,
@@ -208,23 +211,40 @@ test('날짜 검색어 → LIKE 패턴', () => {
   expect(dateQueryToLike('뮤지컬')).toBeNull();
 });
 
-test('검색: 내역·메모·태그·날짜·카테고리, 할부는 한 건', async () => {
+test('검색: 내역·메모·태그 + 기간 + 카테고리, 할부는 한 건', async () => {
   const cats = await db.all<{ id: number; name: string }>("SELECT id, name FROM categories WHERE type = 'expense'");
+  const food = cats.find((c) => c.name === '식비')!;
   const delivery = cats.find((c) => c.name === '배달')!;
   await saveTransaction(db, { ...base, memo: '친구랑 봄', tags: ['스위니토드'] });
   await saveTransaction(db, { ...base, title: '치킨', detail: '', date: '2026-10-02', tags: [], categoryId: delivery.id });
+  await saveTransaction(db, { ...base, title: '피자', detail: '', date: '2026-11-03', tags: [], categoryId: food.id });
   await saveTransaction(db, { ...base, title: '노트북', detail: '', tags: [], amount: 30000, installmentMonths: 3 });
   await saveTransaction(db, { ...base, type: 'income', title: '뮤지컬 환불', tags: [] });
 
-  const titles = async (q: string) => (await searchTransactions(db, 'expense', q)).map((r) => r.title);
-  expect(await titles('뮤지')).toEqual(['뮤지컬']); // 내역 (수입은 안 나옴)
-  expect(await titles('친구')).toEqual(['뮤지컬']); // 메모
-  expect(await titles('#스위니')).toEqual(['뮤지컬']); // 태그
-  expect(await titles('식비')).toEqual(['치킨']); // 대분류
-  expect(await titles('배달')).toEqual(['치킨']); // 소분류
-  expect(await titles('10/2')).toEqual(['치킨']); // 날짜
-  expect(await titles('노트북')).toEqual(['노트북']); // 할부 총액 행 하나만
-  expect(await titles('  ')).toEqual([]);
+  const titles = async (f: SearchFilter) => (await searchTransactions(db, 'expense', f)).map((r) => r.title);
+  expect(await titles({ query: '뮤지' })).toEqual(['뮤지컬']); // 내역 (수입은 안 나옴)
+  expect(await titles({ query: '친구' })).toEqual(['뮤지컬']); // 메모
+  expect(await titles({ query: '#스위니' })).toEqual(['뮤지컬']); // 태그
+  expect(await titles({ query: '노트북' })).toEqual(['노트북']); // 할부 총액 행 하나만
+  // 카테고리: 대분류를 고르면 소분류까지
+  expect(await titles({ categoryId: food.id })).toEqual(['피자', '치킨']);
+  expect(await titles({ categoryId: delivery.id })).toEqual(['치킨']);
+  // 기간
+  expect(await titles({ from: '2026-10-01', to: '2026-10-31' })).toEqual(['치킨']);
+  // 조합
+  expect(await titles({ categoryId: food.id, from: '2026-11-01', to: '2026-11-30' })).toEqual(['피자']);
+  expect(await titles({ query: '치킨', from: '2026-11-01', to: '2026-11-30' })).toEqual([]);
+  // 조건이 하나도 없으면 빈 목록
+  expect(await titles({ query: '  ' })).toEqual([]);
+  expect(await titles({})).toEqual([]);
+});
+
+test('날짜 색: 저장·바꾸기·지우기, 기간 조회', async () => {
+  await setDayColor(db, '2026-11-02', 'pink');
+  await setDayColor(db, '2026-11-03', 'blue');
+  await setDayColor(db, '2026-11-02', 'mint'); // 바꾸기
+  await setDayColor(db, '2026-11-03', null); // 지우기
+  expect(await getDayColors(db, '2026-11-01', '2026-11-30')).toEqual({ '2026-11-02': 'mint' });
 });
 
 test('날짜 이모지: 저장·바꾸기·지우기, 기간 조회', async () => {

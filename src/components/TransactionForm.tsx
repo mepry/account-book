@@ -26,18 +26,22 @@ import {
   getTransactionForEdit,
   saveTransaction,
   searchTags,
+  suggestCategories,
   type BenefitType,
   type Category,
   type PaymentMethod,
+  type SuggestedCategory,
   type TxType,
 } from '../db/queries';
 import { useDb } from '../hooks/useDb';
 import { bumpDataVersion } from '../lib/dataVersion';
+import { today as todayFn } from '../lib/date';
 import { log } from '../lib/logger';
 import { formatNumber, parseAmount } from '../lib/money';
 import { type Theme } from '../theme';
 import { useStyles, useTheme } from '../lib/theme';
 import { AmountKeypad } from './AmountKeypad';
+import { CategoryTreePicker } from './CategoryTreePicker';
 import { DatePickerModal, OptionPicker, openTimePicker, type Option } from './Pickers';
 
 /** 폼을 여는 방법: 새 입력(날짜·시간 기본값) 또는 수정(거래 id) */
@@ -49,7 +53,7 @@ interface Props {
   onClose: () => void;
 }
 
-type PickerKind = 'major' | 'minor' | 'payment' | 'months' | null;
+type PickerKind = 'category' | 'payment' | 'months' | null;
 
 /** 혜택 입력 한 줄 */
 interface BenefitRow {
@@ -116,11 +120,11 @@ export function TransactionForm({ type, target, onClose }: Props) {
   const [suggestions, setSuggestions] = useState<string[]>([]);
 
   const [picker, setPicker] = useState<PickerKind>(null);
+  /** 대분류 선택창 맨 위에 보여줄 추천 카테고리 (같은 내역에 썼던 것, 없으면 최근 많이 쓴 것) */
+  const [suggested, setSuggested] = useState<{ byTitle: boolean; items: SuggestedCategory[] }>({ byTitle: false, items: [] });
   const [dateOpen, setDateOpen] = useState(false);
 
   const byId = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
-  const majors = useMemo(() => categories.filter((c) => c.parent_id === null), [categories]);
-  const minors = useMemo(() => categories.filter((c) => c.parent_id === majorId), [categories, majorId]);
 
   // 폼 열릴 때 초기화
   useEffect(() => {
@@ -177,6 +181,37 @@ export function TransactionForm({ type, target, onClose }: Props) {
       alive = false;
     };
   }, [db, target, type]);
+
+  // 카테고리 추천: 내역을 입력하면 잠깐 뒤에 그 내역에 썼던 카테고리를 찾아 둔다
+  useEffect(() => {
+    if (!target) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      suggestCategories(db, type, title, todayFn())
+        .then((r) => alive && setSuggested(r))
+        .catch((e) => log.error('카테고리 추천 조회 실패', e));
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [db, type, title, target]);
+
+  /** 카테고리 하나를 고르면 대분류·소분류를 함께 정한다 (null = 없음). */
+  const pickCategory = (categoryId: number | null): void => {
+    const c = categoryId !== null ? byId.get(categoryId) : undefined;
+    if (!c) {
+      setMajorId(null);
+      setMinorId(null);
+      applyCategoryDefault(null, null);
+      return;
+    }
+    const major = c.parent_id ?? c.id;
+    const minor = c.parent_id !== null ? c.id : null;
+    setMajorId(major);
+    setMinorId(minor);
+    applyCategoryDefault(major, minor);
+  };
 
   // 태그 자동완성
   useEffect(() => {
@@ -289,6 +324,9 @@ export function TransactionForm({ type, target, onClose }: Props) {
 
   const label = type === 'expense' ? '지출' : '수입';
   const visibleSuggestions = tagInput.replace(/^#/, '').trim() ? suggestions : [];
+  const majorName = majorId !== null ? byId.get(majorId)?.name : undefined;
+  const minorName = minorId !== null ? byId.get(minorId)?.name : undefined;
+  const categoryText = majorName ? (minorName ? `${majorName} > ${minorName}` : majorName) : '없음';
   const paymentName = payments.find((p) => p.id === paymentId)?.name ?? '없음';
   const benefitName = (id: number | null): string => benefitTypes.find((b) => b.id === id)?.name ?? '선택';
   const pickingRow = benefitRows.find((r) => r.key === benefitPickerKey);
@@ -351,12 +389,7 @@ export function TransactionForm({ type, target, onClose }: Props) {
               <TextInput style={styles.input} value={detail} placeholder="선택" placeholderTextColor={theme.colors.subText} onChangeText={setDetail} />
             </Row>
             <Row label="카테고리">
-              <Box flex={1} onPress={() => setPicker('major')} text={majorId ? byId.get(majorId)?.name ?? '없음' : '없음'} />
-              <Box
-                flex={1}
-                onPress={() => majorId && setPicker('minor')}
-                text={minorId ? byId.get(minorId)?.name ?? '없음' : '없음'}
-              />
+              <Box flex={1} onPress={() => setPicker('category')} text={categoryText} />
             </Row>
             <Row label="결제">
               <Box flex={3} onPress={() => setPicker('payment')} text={paymentName} />
@@ -456,28 +489,19 @@ export function TransactionForm({ type, target, onClose }: Props) {
       </KeyboardAvoidingView>
 
       <DatePickerModal visible={dateOpen} value={date} onSelect={setDate} onClose={() => setDateOpen(false)} />
-      <OptionPicker
-        visible={picker === 'major'}
-        title="대분류"
-        options={[{ label: '없음', value: null }, ...majors.map((c) => ({ label: c.name, value: c.id as number | null }))]}
-        selected={majorId}
-        onSelect={(v) => {
-          setMajorId(v);
-          setMinorId(null);
-          applyCategoryDefault(v, null);
-        }}
+      <CategoryTreePicker
+        visible={picker === 'category'}
+        title="카테고리"
+        categories={categories}
+        selected={minorId ?? majorId}
+        onSelect={pickCategory}
         onClose={() => setPicker(null)}
-      />
-      <OptionPicker
-        visible={picker === 'minor'}
-        title="소분류"
-        options={[{ label: '없음', value: null }, ...minors.map((c) => ({ label: c.name, value: c.id as number | null }))]}
-        selected={minorId}
-        onSelect={(v) => {
-          setMinorId(v);
-          applyCategoryDefault(majorId, v);
-        }}
-        onClose={() => setPicker(null)}
+        allLabel="없음"
+        // 맨 위: 이 내역에 썼던 카테고리 (없으면 최근 많이 쓴 것)
+        suggestions={suggested.items.map((sc) => ({
+          id: sc.id,
+          sub: suggested.byTitle ? `이 내역에 ${sc.count}번 사용` : `최근 많이 쓴 카테고리 (${sc.count}번)`,
+        }))}
       />
       <OptionPicker
         visible={picker === 'payment'}

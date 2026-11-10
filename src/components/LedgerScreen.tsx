@@ -8,9 +8,11 @@ import { Animated, Easing, PanResponder, Pressable, ScrollView, StyleSheet, Text
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   getDailyTotals,
+  getDayColors,
   getDayItems,
   getDayMarks,
   getMonthInstallments,
+  setDayColor,
   setDayMark,
   setTransactionExcluded,
   type InstallmentItem,
@@ -62,6 +64,8 @@ interface MonthView {
   monthSum: number;
   otherTotal: number;
   marks: Record<string, string>;
+  /** 날짜별 칸 배경색 키 */
+  colors: Record<string, string>;
   /** 이번 달 할부 분할 건 (달력 칸 대신 달력 아래에 따로 보여준다) */
   installments: InstallmentItem[];
 }
@@ -78,7 +82,7 @@ export function LedgerScreen({ type }: { type: TxType }) {
   const today = todayFn();
   const [ym, setYm] = useState(today.slice(0, 7));
   const [includeExcluded, setIncludeExcluded] = useState(false);
-  const [view, setView] = useState<MonthView>({ ym, totals: {}, monthSum: 0, otherTotal: 0, marks: {}, installments: [] });
+  const [view, setView] = useState<MonthView>({ ym, totals: {}, monthSum: 0, otherTotal: 0, marks: {}, colors: {}, installments: [] });
   const [sheetDate, setSheetDate] = useState<string | null>(null);
   // 내역은 어느 날짜의 것인지 같이 들고 있어야, 다른 날짜를 눌렀을 때 이전 날짜 내역이 잠깐 보이지 않는다
   const [sheetData, setSheetData] = useState<{ date: string; items: LedgerItem[] } | null>(null);
@@ -98,11 +102,12 @@ export function LedgerScreen({ type }: { type: TxType }) {
       getDailyTotals(db, type, ym, includeExcluded, { skipInstallmentParts: true }),
       getDailyTotals(db, other, ym, includeExcluded),
       getDayMarks(db, range.from, range.to),
+      getDayColors(db, range.from, range.to),
       getMonthInstallments(db, type, ym, true),
     ])
-      .then(([cells, mine, theirs, marks, installments]) => {
+      .then(([cells, mine, theirs, marks, colors, installments]) => {
         if (!alive) return;
-        setView({ ym, totals: cells, monthSum: sum(mine), otherTotal: sum(theirs), marks, installments });
+        setView({ ym, totals: cells, monthSum: sum(mine), otherTotal: sum(theirs), marks, colors, installments });
       })
       .catch((e) => log.error('월 합계 조회 실패', e));
     return () => {
@@ -180,7 +185,15 @@ export function LedgerScreen({ type }: { type: TxType }) {
       .catch((e) => log.error('날짜 이모지 저장 실패', e));
   };
 
-  const { totals, monthSum, otherTotal, marks, installments } = view;
+  /** 날짜 칸 배경색을 바꾼다. 지출·수입 탭 모두 같이 바뀐다. */
+  const changeColor = (color: string | null): void => {
+    if (!sheetDate) return;
+    setDayColor(db, sheetDate, color)
+      .then(bumpDataVersion)
+      .catch((e) => log.error('날짜 색 저장 실패', e));
+  };
+
+  const { totals, monthSum, otherTotal, marks, colors, installments } = view;
   // 이번 달 합계에는 할부금도 포함한다 (달력 칸에서만 뺐음). 제외 항목은 토글을 켰을 때만 더한다.
   const installmentTotal = installments.reduce((s, i) => s + (i.excluded && !includeExcluded ? 0 : i.amount), 0);
   const monthTotal = monthSum + installmentTotal;
@@ -265,6 +278,7 @@ export function LedgerScreen({ type }: { type: TxType }) {
             ym={view.ym}
             totals={totals}
             marks={marks}
+            colors={colors}
             today={today}
             selectedDate={sheetDate}
             onPressDay={onPressDay}
@@ -292,6 +306,8 @@ export function LedgerScreen({ type }: { type: TxType }) {
         onLongPressItem={(item) => confirmDelete(item.edit_id, item.kind === 'installment_part')}
         mark={sheetDate ? marks[sheetDate] : undefined}
         onChangeMark={changeMark}
+        color={sheetDate ? colors[sheetDate] : undefined}
+        onChangeColor={changeColor}
       />
       <DatePickerModal
         visible={jumpOpen}

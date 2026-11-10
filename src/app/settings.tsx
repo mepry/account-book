@@ -1,5 +1,5 @@
 /**
- * 설정: 테마, 백업·복원, 카테고리 추가·수정·삭제와 "기본 제외" 설정.
+ * 설정: 테마, 백업·복원, 카드 문자 자동 추가, 카테고리 추가·수정·삭제와 "기본 제외" 설정.
  */
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
@@ -15,6 +15,7 @@ import {
 } from '../db/queries';
 import { useDb } from '../hooks/useDb';
 import { CategoryEditModal, type CategoryEditTarget } from '../components/CategoryEditModal';
+import { SmsSettings } from '../components/SmsSettings';
 import { getLastBackupAt, pickAndRestoreBackup, saveBackup } from '../lib/backupFile';
 import { bumpDataVersion, useDataVersion } from '../lib/dataVersion';
 import { log } from '../lib/logger';
@@ -138,6 +139,9 @@ export default function SettingsScreen() {
         </Pressable>
       </View>
       {backupResult ? <Text style={styles.result}>{backupResult}</Text> : null}
+
+      <Text style={styles.section}>카드 문자 자동 추가</Text>
+      <SmsSettings />
 
       <Text style={styles.section}>카테고리</Text>
       <Text style={styles.help}>

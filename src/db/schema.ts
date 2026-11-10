@@ -83,6 +83,30 @@ CREATE TABLE IF NOT EXISTS day_marks (
   emoji TEXT NOT NULL
 );
 
+-- 날짜별 칸 배경색 (지출·수입 달력 공용, 값은 theme.ts DAY_COLORS의 키)
+CREATE TABLE IF NOT EXISTS day_colors (
+  date TEXT PRIMARY KEY,
+  color TEXT NOT NULL
+);
+
+-- 월별 고정지출·예산 (카테고리별 계획 금액). 한 달에 한 카테고리는 한 번만
+CREATE TABLE IF NOT EXISTS budget_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ym TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('fixed', 'budget')),
+  category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  amount INTEGER NOT NULL,
+  sort INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (ym, category_id)
+);
+
+-- 카드 결제 문자 자동 추가 기록 (같은 문자 중복 방지, 취소 문자 대상 찾기)
+CREATE TABLE IF NOT EXISTS sms_imports (
+  key TEXT PRIMARY KEY,
+  transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  received_at TEXT NOT NULL
+);
+
 CREATE VIEW IF NOT EXISTS v_ledger AS
   SELECT * FROM transactions WHERE kind != 'installment_parent';
 `;

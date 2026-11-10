@@ -4,7 +4,6 @@
  * 할부 거래의 태그·메모는 총액 행(parent)에만 있으므로 COALESCE(parent_id, id)로 연결한다.
  */
 import type { SqlDb, SqlParam } from './adapter';
-import { dateQueryToLike } from '../lib/date';
 import { splitInstallment } from '../lib/installment';
 
 export type TxType = 'expense' | 'income';
@@ -205,6 +204,43 @@ export async function getMonthInstallments(
  */
 export async function getCategories(db: SqlDb, type: TxType): Promise<Category[]> {
   return db.all<Category>('SELECT * FROM categories WHERE type = ? ORDER BY sort, id', [type]);
+}
+
+/** 추천 카테고리 한 개 */
+export interface SuggestedCategory {
+  id: number;
+  /** 쓴 횟수 */
+  count: number;
+}
+
+/**
+ * 입력 폼 카테고리 추천: 같은 내역(제목)에 썼던 카테고리를 많이 쓴 순서로.
+ * 같은 내역이 없거나 제목이 비어 있으면 최근 90일 동안 많이 쓴 카테고리.
+ * @param db DB
+ * @param type 지출/수입
+ * @param title 입력 중인 내역
+ * @param today 오늘 YYYY-MM-DD (최근 기간 계산용)
+ * @param limit 최대 개수
+ */
+export async function suggestCategories(
+  db: SqlDb,
+  type: TxType,
+  title: string,
+  today: string,
+  limit = 4,
+): Promise<{ byTitle: boolean; items: SuggestedCategory[] }> {
+  const base = `SELECT category_id AS id, COUNT(*) AS count FROM transactions
+     WHERE type = ? AND kind != 'installment_part' AND category_id IS NOT NULL`;
+  const tail = 'GROUP BY category_id ORDER BY count DESC, MAX(date) DESC LIMIT ?';
+  const t = title.trim();
+  if (t) {
+    const items = await db.all<SuggestedCategory>(`${base} AND title = ? ${tail}`, [type, t, limit]);
+    if (items.length) return { byTitle: true, items };
+  }
+  const since = new Date(`${today}T00:00:00`);
+  since.setDate(since.getDate() - 90);
+  const from = `${since.getFullYear()}-${String(since.getMonth() + 1).padStart(2, '0')}-${String(since.getDate()).padStart(2, '0')}`;
+  return { byTitle: false, items: await db.all<SuggestedCategory>(`${base} AND date >= ? ${tail}`, [type, from, limit]) };
 }
 
 /**
@@ -596,6 +632,40 @@ export async function setDayMark(db: SqlDb, date: string, emoji: string | null):
   );
 }
 
+// ---------------- 날짜 색 ----------------
+
+/**
+ * 한 달(앞뒤 달 일부 포함 가능)의 날짜별 칸 배경색 키. 지출·수입 공용.
+ * @param db DB
+ * @param from 시작 YYYY-MM-DD
+ * @param to 끝 YYYY-MM-DD
+ * @returns { 'YYYY-MM-DD': 'pink' }
+ */
+export async function getDayColors(db: SqlDb, from: string, to: string): Promise<Record<string, string>> {
+  const rows = await db.all<{ date: string; color: string }>(
+    'SELECT date, color FROM day_colors WHERE date BETWEEN ? AND ?',
+    [from, to],
+  );
+  return Object.fromEntries(rows.map((r) => [r.date, r.color]));
+}
+
+/**
+ * 날짜 칸 배경색을 정한다. 빈 값이면 지운다.
+ * @param db DB
+ * @param date YYYY-MM-DD
+ * @param color 색 키 (null/빈 값 = 지우기)
+ */
+export async function setDayColor(db: SqlDb, date: string, color: string | null): Promise<void> {
+  if (!color) {
+    await db.run('DELETE FROM day_colors WHERE date = ?', [date]);
+    return;
+  }
+  await db.run(
+    'INSERT INTO day_colors (date, color) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET color = excluded.color',
+    [date, color],
+  );
+}
+
 // ---------------- 검색 ----------------
 
 /** 검색 결과 한 줄 (할부는 총액 행 하나로 나온다) */
@@ -613,17 +683,54 @@ export interface SearchItem {
   tags: string | null;
 }
 
+/** LIKE 검색어로 정리한다 (앞 # 제거, 와일드카드 문자 제거). 빈 값이면 null. */
+const toLike = (keyword: string): string | null => {
+  const q = keyword.trim().replace(/^#/, '').replace(/[%_]/g, '');
+  return q ? `%${q}%` : null;
+};
+
+/** 검색 조건. 값이 있는 것만 AND로 건다. */
+export interface SearchFilter {
+  /** 내역·상세·메모·태그 검색어 (태그는 # 붙여도 됨) */
+  query?: string;
+  /** 시작일 YYYY-MM-DD (포함). from·to 둘 다 없으면 전체 기간 */
+  from?: string | null;
+  /** 종료일 YYYY-MM-DD (포함) */
+  to?: string | null;
+  /** 카테고리 id. 대분류면 하위 소분류까지 포함. null = 전체 */
+  categoryId?: number | null;
+}
+
 /**
- * 내역·상세·메모·태그·날짜·카테고리(대/소분류)로 거래를 찾는다. 최신순, 최대 300건.
+ * 검색어·기간·카테고리로 거래를 찾는다. 최신순, 최대 300건.
+ * 조건이 하나도 없으면(검색어 빈칸 + 전체 기간 + 전체 카테고리) 빈 목록.
  * @param db DB
  * @param type 지출/수입
- * @param query 검색어 (태그는 # 붙여도 됨, 날짜는 "11/4"·"2026.11"·"11월" 등)
+ * @param filter 검색 조건
  */
-export async function searchTransactions(db: SqlDb, type: TxType, query: string): Promise<SearchItem[]> {
-  const q = query.trim().replace(/^#/, '');
-  if (!q) return [];
-  const like = `%${q.replace(/[%_]/g, '')}%`;
-  const dateLike = dateQueryToLike(q) ?? like;
+export async function searchTransactions(db: SqlDb, type: TxType, filter: SearchFilter): Promise<SearchItem[]> {
+  const parts: string[] = [];
+  const params: SqlParam[] = [type];
+  const like = filter.query ? toLike(filter.query) : null;
+  if (like) {
+    parts.push(`AND (t.title LIKE ? OR t.detail LIKE ? OR t.memo LIKE ?
+            OR EXISTS (SELECT 1 FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id
+                       WHERE tt.transaction_id = t.id AND tg.name LIKE ?))`);
+    params.push(like, like, like, like);
+  }
+  if (filter.from) {
+    parts.push('AND t.date >= ?');
+    params.push(filter.from);
+  }
+  if (filter.to) {
+    parts.push('AND t.date <= ?');
+    params.push(filter.to);
+  }
+  if (filter.categoryId != null) {
+    parts.push('AND t.category_id IN (SELECT id FROM categories WHERE id = ? OR parent_id = ?)');
+    params.push(filter.categoryId, filter.categoryId);
+  }
+  if (parts.length === 0) return [];
   return db.all<SearchItem>(
     `SELECT t.id, t.date, t.time, t.amount, t.title, t.detail, t.memo,
             t.excluded, t.installment_months,
@@ -633,33 +740,29 @@ export async function searchTransactions(db: SqlDb, type: TxType, query: string)
      FROM transactions t
      LEFT JOIN categories c ON c.id = t.category_id
      LEFT JOIN categories pc ON pc.id = c.parent_id
-     WHERE t.type = ? AND t.kind != 'installment_part'
-       AND (t.title LIKE ? OR t.detail LIKE ? OR t.memo LIKE ?
-            OR c.name LIKE ? OR pc.name LIKE ? OR t.date LIKE ?
-            OR EXISTS (SELECT 1 FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id
-                       WHERE tt.transaction_id = t.id AND tg.name LIKE ?))
+     WHERE t.type = ? AND t.kind != 'installment_part' ${parts.join(' ')}
      ORDER BY t.date DESC, t.time DESC, t.id DESC
      LIMIT 300`,
-    [type, like, like, like, like, like, dateLike, like],
+    params,
   );
 }
 
 // ---------------- 통계 ----------------
 
+/** 통계 필터의 "결제수단 없음" 값 (실제 결제수단 id는 1부터) */
+export const NO_PAYMENT_METHOD = 0;
+
 /** 통계 필터. 값이 있는 것만 AND로 건다. */
 export interface StatsFilter {
   /** 대분류면 하위 소분류까지 포함 */
   categoryId?: number | null;
+  /** 결제수단 id. NO_PAYMENT_METHOD(0)이면 결제수단 없는 내역 */
   paymentMethodId?: number | null;
+  /** 이 카테고리에 바로 붙은 내역만 (소분류 포함 안 함). 원형 차트 "하위카테고리별" 조각 상세용 */
+  exactCategoryId?: number | null;
   /** 검색어: 태그·내역·상세·메모에서 찾는다 (앞의 # 무시) */
   keyword?: string;
 }
-
-/** LIKE 검색어로 정리한다 (앞 # 제거, 와일드카드 문자 제거). 빈 값이면 null. */
-const toLike = (keyword: string): string | null => {
-  const q = keyword.trim().replace(/^#/, '').replace(/[%_]/g, '');
-  return q ? `%${q}%` : null;
-};
 
 /**
  * 통계 필터를 v_ledger(l) 조건으로 바꾼다. 앞에 AND가 붙어 있어 WHERE 끝에 그대로 이어 붙이면 된다.
@@ -672,9 +775,15 @@ function filterSql(f: StatsFilter = {}): { sql: string; params: SqlParam[] } {
     parts.push('AND l.category_id IN (SELECT id FROM categories WHERE id = ? OR parent_id = ?)');
     params.push(f.categoryId, f.categoryId);
   }
-  if (f.paymentMethodId != null) {
+  if (f.paymentMethodId === NO_PAYMENT_METHOD) {
+    parts.push('AND l.payment_method_id IS NULL');
+  } else if (f.paymentMethodId != null) {
     parts.push('AND l.payment_method_id = ?');
     params.push(f.paymentMethodId);
+  }
+  if (f.exactCategoryId != null) {
+    parts.push('AND l.category_id = ?');
+    params.push(f.exactCategoryId);
   }
   const like = f.keyword ? toLike(f.keyword) : null;
   if (like) {
@@ -689,6 +798,29 @@ function filterSql(f: StatsFilter = {}): { sql: string; params: SqlParam[] } {
     params.push(like, like, like, like);
   }
   return { sql: parts.join(' '), params };
+}
+
+/**
+ * 기간 합계 (할부는 분할 건 기준, 카테고리·검색 필터 없이 전체).
+ * @param db DB
+ * @param type 지출/수입
+ * @param from 시작일 (포함)
+ * @param to 종료일 (포함)
+ * @param includeExcluded 제외 항목 포함 여부
+ */
+export async function getPeriodTotal(
+  db: SqlDb,
+  type: TxType,
+  from: string,
+  to: string,
+  includeExcluded: boolean,
+): Promise<number> {
+  const row = await db.first<{ total: number }>(
+    `SELECT COALESCE(SUM(l.amount), 0) AS total FROM v_ledger l
+     WHERE l.type = ? AND l.date BETWEEN ? AND ? ${excludedClause(includeExcluded)}`,
+    [type, from, to],
+  );
+  return row?.total ?? 0;
 }
 
 export interface CategoryTotal {
@@ -723,6 +855,59 @@ export async function getCategoryTotals(
      FROM v_ledger l
      LEFT JOIN categories c ON c.id = l.category_id
      LEFT JOIN categories pc ON pc.id = c.parent_id
+     WHERE l.type = ? AND l.date BETWEEN ? AND ? ${excludedClause(includeExcluded)} ${f.sql}
+     GROUP BY 1, 2 HAVING COUNT(*) > 0 ORDER BY total DESC, name`,
+    [type, from, to, ...f.params],
+  );
+}
+
+/**
+ * 기간 내 소분류별 합계 (원형 차트 "하위카테고리별"). 대분류에 바로 붙은 내역은 대분류 이름으로.
+ * @param from 시작일 (포함)
+ * @param to 종료일 (포함)
+ * @param filter 통계 필터
+ */
+export async function getMinorCategoryTotals(
+  db: SqlDb,
+  type: TxType,
+  from: string,
+  to: string,
+  includeExcluded: boolean,
+  filter: StatsFilter = {},
+): Promise<CategoryTotal[]> {
+  const f = filterSql(filter);
+  return db.all<CategoryTotal>(
+    `SELECT c.id,
+            CASE WHEN c.id IS NULL THEN '미분류' WHEN pc.name IS NULL THEN c.name ELSE pc.name || ' > ' || c.name END AS name,
+            SUM(l.amount) AS total
+     FROM v_ledger l
+     LEFT JOIN categories c ON c.id = l.category_id
+     LEFT JOIN categories pc ON pc.id = c.parent_id
+     WHERE l.type = ? AND l.date BETWEEN ? AND ? ${excludedClause(includeExcluded)} ${f.sql}
+     GROUP BY 1, 2 HAVING COUNT(*) > 0 ORDER BY total DESC, name`,
+    [type, from, to, ...f.params],
+  );
+}
+
+/**
+ * 기간 내 결제수단별 합계 (원형 차트 "결제수단별"). id null = 결제수단 없음.
+ * @param from 시작일 (포함)
+ * @param to 종료일 (포함)
+ * @param filter 통계 필터
+ */
+export async function getPaymentTotals(
+  db: SqlDb,
+  type: TxType,
+  from: string,
+  to: string,
+  includeExcluded: boolean,
+  filter: StatsFilter = {},
+): Promise<CategoryTotal[]> {
+  const f = filterSql(filter);
+  return db.all<CategoryTotal>(
+    `SELECT pm.id, COALESCE(pm.name, '결제수단 없음') AS name, SUM(l.amount) AS total
+     FROM v_ledger l
+     LEFT JOIN payment_methods pm ON pm.id = l.payment_method_id
      WHERE l.type = ? AND l.date BETWEEN ? AND ? ${excludedClause(includeExcluded)} ${f.sql}
      GROUP BY 1, 2 HAVING COUNT(*) > 0 ORDER BY total DESC, name`,
     [type, from, to, ...f.params],

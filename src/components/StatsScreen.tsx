@@ -14,10 +14,15 @@ import {
   ALL_CATEGORIES,
   getCategories,
   getCategoryTotals,
+  getMinorCategoryTotals,
   getMonthlyTotals,
   getPaymentMethods,
+  getPaymentTotals,
+  getPeriodTotal,
   getTitleTotals,
+  type Category,
   type CategoryItem,
+  NO_PAYMENT_METHOD,
   type CategoryTotal,
   type StatsFilter,
   type TitleTotal,
@@ -34,6 +39,7 @@ import type { Theme } from '../theme';
 import { useStyles, useTheme } from '../lib/theme';
 import { CategoryDetailSheet, type CategoryDetailTarget } from './CategoryDetailSheet';
 import { CategoryPie, type PieItem } from './CategoryPie';
+import { CategoryTreePicker } from './CategoryTreePicker';
 import { KeywordFilterModal } from './KeywordFilterModal';
 import { MonthCategorySheet } from './MonthCategorySheet';
 import { DatePickerModal, OptionPicker, type Option } from './Pickers';
@@ -42,6 +48,20 @@ import { TodayButton, TopBar } from './TopBar';
 import { TransactionForm, type FormTarget } from './TransactionForm';
 
 type Mode = 'month' | 'year' | 'custom';
+
+/** 원형 차트 기준 */
+type PieMode = 'category' | 'minor' | 'payment';
+
+const PIE_MODES: { value: PieMode; label: string }[] = [
+  { value: 'category', label: '카테고리' },
+  { value: 'minor', label: '하위카테고리' },
+  { value: 'payment', label: '결제수단' },
+];
+
+/** 하위카테고리·결제수단 차트에서 따로 보여줄 최대 조각 수 (나머지는 "그 외"로 묶음) */
+const MAX_SLICES = 8;
+/** "그 외" 조각 id */
+const OTHERS_ID = -1;
 
 /** 목록에서 고르는 필터 종류 */
 type PickKind = 'categoryId' | 'paymentMethodId';
@@ -94,6 +114,8 @@ export function StatsScreen() {
   const [form, setForm] = useState<FormTarget | null>(null);
   const [filter, setFilter] = useState<StatsFilter>({});
   const [pickOpen, setPickOpen] = useState<PickKind | null>(null);
+  /** 카테고리 필터 선택창용 목록 */
+  const [filterCategories, setFilterCategories] = useState<Category[]>([]);
   const [keywordOpen, setKeywordOpen] = useState(false);
   const [pickOptions, setPickOptions] = useState<Record<PickKind, Option<number | null>[]>>({
     categoryId: [],
@@ -104,9 +126,13 @@ export function StatsScreen() {
   /** 내역 이름 말풍선을 보는 동안 스크롤 잠금 */
   const [scrollLocked, setScrollLocked] = useState(false);
 
-  const [cats, setCats] = useState<CategoryTotal[]>([]);
+  /** 원형 차트 데이터: 세 기준을 한꺼번에 불러 둬서 기준을 바꿀 때 기다림·이전 차트 잔상이 없게 한다 */
+  const [pieRows, setPieRows] = useState<Record<PieMode, CategoryTotal[]>>({ category: [], minor: [], payment: [] });
+  const [pieMode, setPieMode] = useState<PieMode>('category');
   const [monthly, setMonthly] = useState<Record<string, number>>({});
   const [titles, setTitles] = useState<TitleTotal[]>([]);
+  /** 기간 수입·지출 합계 (맨 아래 수입 − 지출) */
+  const [net, setNet] = useState({ income: 0, expense: 0 });
 
   const { from, to, label } = useMemo(() => {
     if (mode === 'custom') return { from: customFrom, to: customTo, label: `${customFrom} ~ ${customTo}` };
@@ -124,6 +150,7 @@ export function StatsScreen() {
     Promise.all([getCategories(db, type), getPaymentMethods(db)])
       .then(([cs, pms]) => {
         if (!alive) return;
+        setFilterCategories(cs);
         const names = new Map(cs.map((c) => [c.id, c.name]));
         // 대분류 바로 아래에 그 소분류들이 오도록 정렬
         const tops = cs.filter((c) => c.parent_id === null);
@@ -168,13 +195,17 @@ export function StatsScreen() {
     let alive = true;
     Promise.all([
       // 기간 안에 내역이 있으면 0원(0%)이어도 차트에 나온다
-      getCategoryTotals(db, type, from, to, includeExcluded, filter),
+      Promise.all([
+        getCategoryTotals(db, type, from, to, includeExcluded, filter),
+        getMinorCategoryTotals(db, type, from, to, includeExcluded, filter),
+        getPaymentTotals(db, type, from, to, includeExcluded, filter),
+      ]),
       getMonthlyTotals(db, type, months12[0], months12[11], includeExcluded, filter),
       getTitleTotals(db, type, from, to, includeExcluded, filter),
     ])
-      .then(([c, m, t]) => {
+      .then(([[category, minor, payment], m, t]) => {
         if (!alive) return;
-        setCats(c);
+        setPieRows({ category, minor, payment });
         setMonthly(m);
         setTitles(t);
       })
@@ -184,24 +215,56 @@ export function StatsScreen() {
     };
   }, [db, type, from, to, includeExcluded, months12, filter, version]);
 
-  const pieItems: PieItem[] = cats.map((c, i) => ({
+  // 기간 수입 − 지출: 지출/수입 선택·필터와 상관없이 기간 전체 (제외 항목 토글은 따른다)
+  useEffect(() => {
+    let alive = true;
+    Promise.all([getPeriodTotal(db, 'income', from, to, includeExcluded), getPeriodTotal(db, 'expense', from, to, includeExcluded)])
+      .then(([income, expense]) => alive && setNet({ income, expense }))
+      .catch((e) => log.error('기간 수입·지출 조회 실패', e));
+    return () => {
+      alive = false;
+    };
+  }, [db, from, to, includeExcluded, version]);
+
+  const cats = pieRows[pieMode];
+  // 하위카테고리·결제수단은 조각이 많아질 수 있어 큰 것 몇 개만 따로, 나머지는 "그 외"로 묶는다
+  const slices: CategoryTotal[] =
+    pieMode !== 'category' && cats.length > MAX_SLICES
+      ? [
+          ...cats.slice(0, MAX_SLICES - 1),
+          {
+            id: OTHERS_ID,
+            name: `그 외 ${cats.length - (MAX_SLICES - 1)}개`,
+            total: cats.slice(MAX_SLICES - 1).reduce((s, c) => s + c.total, 0),
+          },
+        ]
+      : cats;
+  const pieItems: PieItem[] = slices.map((c, i) => ({
     key: `${c.id}`,
-    name: c.name,
+    // 하위카테고리별 캡션은 칸이 좁아 "대분류 > " 앞부분을 빼고 소분류 이름만 (상세 레이어 제목은 전체 이름)
+    name: pieMode === 'minor' ? (c.name.split(' > ').pop() ?? c.name) : c.name,
     value: c.total,
     color: c.total > 0 ? theme.chartPalette[i % theme.chartPalette.length] : theme.colors.muted,
   }));
-  const total = cats.reduce((s, c) => s + c.total, 0);
+  const total = slices.reduce((s, c) => s + c.total, 0);
 
   /** 캡션·조각을 누르면 그 카테고리 상세 레이어를 연다. */
   const openDetail = (index: number): void => {
-    const c = cats[index];
-    setDetail({
-      id: c.id,
-      name: c.name,
-      total: c.total,
-      percent: total > 0 ? Math.round((c.total / total) * 100) : 0,
-      color: pieItems[index].color,
-    });
+    const c = slices[index];
+    if (c.id === OTHERS_ID) {
+      openAll();
+      return;
+    }
+    const base = { name: c.name, total: c.total, percent: total > 0 ? Math.round((c.total / total) * 100) : 0, color: pieItems[index].color };
+    if (pieMode === 'payment') {
+      // 결제수단 조각: 그 결제수단 내역만 (카테고리별로 나눠 보여줌)
+      setDetail({ ...base, id: ALL_CATEGORIES, extraFilter: { paymentMethodId: c.id ?? NO_PAYMENT_METHOD } });
+    } else if (pieMode === 'minor' && c.id !== null) {
+      // 하위카테고리 조각: 그 카테고리에 바로 붙은 내역만
+      setDetail({ ...base, id: ALL_CATEGORIES, extraFilter: { exactCategoryId: c.id } });
+    } else {
+      setDetail({ ...base, id: c.id });
+    }
   };
 
   /** 가운데 총 합계를 누르면 기간 전체 내역 레이어를 연다. */
@@ -306,8 +369,20 @@ export function StatsScreen() {
           <Text style={styles.toggleText}>{includeExcluded ? '☑' : '☐'} 제외 항목 포함</Text>
         </Pressable>
 
-        {/* 카테고리 원형 차트 */}
-        <Text style={styles.section}>카테고리별</Text>
+        {/* 원형 차트: 카테고리 / 하위카테고리 / 결제수단별 */}
+        <Text style={styles.section}>{PIE_MODES.find((m) => m.value === pieMode)?.label}별</Text>
+        <View style={styles.pieModes}>
+          {PIE_MODES.map((m) => (
+            <Pressable
+              key={m.value}
+              style={[styles.pieMode, pieMode === m.value && styles.pieModeActive]}
+              onPress={() => setPieMode(m.value)}
+              accessibilityState={{ selected: pieMode === m.value }}
+            >
+              <Text style={[styles.pieModeText, pieMode === m.value && styles.pieModeTextActive]}>{m.label}</Text>
+            </Pressable>
+          ))}
+        </View>
         {cats.length > 0 ? (
           <View style={styles.pieWrap}>
             <CategoryPie items={pieItems} width={width - 8} onPressItem={openDetail} onPressTotal={openAll} />
@@ -316,7 +391,9 @@ export function StatsScreen() {
           <Text style={styles.empty}>{hasFilter ? '필터에 맞는 내역이 없습니다' : '이 기간에 내역이 없습니다'}</Text>
         )}
         {cats.length > 0 ? (
-          <Text style={styles.caption}>조각·캡션을 누르면 그 카테고리, 가운데 총 합계를 누르면 전체 내역을 볼 수 있어요</Text>
+          <Text style={styles.caption}>
+            조각·캡션을 누르면 그 {pieMode === 'payment' ? '결제수단' : '카테고리'}, 가운데 총 합계를 누르면 전체 내역을 볼 수 있어요
+          </Text>
         ) : null}
 
         {/* 내역(title)별 합계: 헤더를 누르면 정렬 */}
@@ -357,6 +434,30 @@ export function StatsScreen() {
             <SummaryItem label="중간값" value={median(monthValues)} />
           </View>
         </View>
+
+        {/* 기간 수입 − 지출 */}
+        <Text style={styles.section}>기간 수입 − 지출</Text>
+        <View style={styles.netBox}>
+          <Text style={styles.netPeriod}>
+            {label}
+            {includeExcluded ? ' · 제외 항목 포함' : ''}
+          </Text>
+          <View style={styles.netRow}>
+            <Text style={styles.netLabel}>수입</Text>
+            <Text style={[styles.netValue, { color: theme.colors.income }]}>{formatWon(net.income)}</Text>
+          </View>
+          <View style={styles.netRow}>
+            <Text style={styles.netLabel}>지출</Text>
+            <Text style={[styles.netValue, { color: theme.colors.expense }]}>{formatWon(net.expense)}</Text>
+          </View>
+          <View style={[styles.netRow, styles.netTotalRow]}>
+            <Text style={styles.netTotalLabel}>수입 − 지출</Text>
+            <Text style={[styles.netTotal, { color: net.income - net.expense < 0 ? theme.colors.expense : theme.colors.income }]}>
+              {net.income - net.expense < 0 ? '-' : ''}
+              {formatWon(Math.abs(net.income - net.expense))}
+            </Text>
+          </View>
+        </View>
       </ScrollView>
 
       <DatePickerModal
@@ -366,12 +467,22 @@ export function StatsScreen() {
         onClose={() => setDateEdit(null)}
       />
       <OptionPicker
-        visible={pickOpen !== null}
-        title={pickOpen ? `${PICK_TITLES[pickOpen]} 필터` : ''}
-        options={pickOpen ? pickOptions[pickOpen] : []}
-        selected={pickOpen ? (filter[pickOpen] ?? null) : null}
-        onSelect={(v) => pickOpen && setFilter((f) => ({ ...f, [pickOpen]: v }))}
+        visible={pickOpen === 'paymentMethodId'}
+        title={`${PICK_TITLES.paymentMethodId} 필터`}
+        options={pickOptions.paymentMethodId}
+        selected={filter.paymentMethodId ?? null}
+        onSelect={(v) => setFilter((f) => ({ ...f, paymentMethodId: v }))}
         onClose={() => setPickOpen(null)}
+      />
+      <CategoryTreePicker
+        visible={pickOpen === 'categoryId'}
+        title={`${PICK_TITLES.categoryId} 필터`}
+        categories={filterCategories}
+        selected={filter.categoryId ?? null}
+        onSelect={(v) => setFilter((f) => ({ ...f, categoryId: v }))}
+        onClose={() => setPickOpen(null)}
+        allLabel="전체"
+        majorSub="소분류 포함"
       />
       <KeywordFilterModal
         visible={keywordOpen}
@@ -520,7 +631,20 @@ const makeStyles = (t: Theme) =>
     toggle: { paddingHorizontal: 12, paddingVertical: 10 },
     toggleText: { fontSize: 14, color: t.colors.text },
     section: { fontSize: 17, fontWeight: '700', color: t.colors.text, paddingHorizontal: 16, paddingTop: 20, paddingBottom: 10 },
+    netBox: { marginHorizontal: 12, marginBottom: 24, padding: 14, borderRadius: t.radius, backgroundColor: t.colors.surface, gap: 8 },
+    netPeriod: { fontSize: 12, color: t.colors.subText },
+    netRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    netLabel: { fontSize: 15, color: t.colors.text },
+    netValue: { fontSize: 15, fontWeight: '600' },
+    netTotalRow: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: t.colors.border, paddingTop: 8 },
+    netTotalLabel: { fontSize: 16, fontWeight: '700', color: t.colors.text },
+    netTotal: { fontSize: 18, fontWeight: '700' },
     sectionCount: { fontSize: 13, fontWeight: '400', color: t.colors.subText },
+    pieModes: { flexDirection: 'row', gap: 6, paddingHorizontal: 12 },
+    pieMode: { flex: 1, paddingVertical: 7, borderRadius: t.radius, borderWidth: 1, borderColor: t.colors.border, alignItems: 'center' },
+    pieModeActive: { backgroundColor: t.colors.surface, borderColor: t.colors.primary },
+    pieModeText: { fontSize: 13, color: t.colors.subText },
+    pieModeTextActive: { color: t.colors.text, fontWeight: '700' },
     pieWrap: { alignItems: 'center', paddingVertical: 8 },
     empty: { textAlign: 'center', color: t.colors.subText, paddingVertical: 16 },
     caption: { fontSize: 12, color: t.colors.subText, paddingHorizontal: 16, paddingTop: 6 },

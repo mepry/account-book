@@ -6,6 +6,7 @@ import { SQLiteProvider, type SQLiteDatabase } from 'expo-sqlite';
 import { StatusBar } from 'expo-status-bar';
 import { wrapExpoDb } from '../db/expoAdapter';
 import { initSchema } from '../db/schema';
+import { useSmsAutoImport } from '../hooks/useSmsAutoImport';
 import { ThemeProvider, useTheme } from '../lib/theme';
 
 /**
@@ -28,6 +29,8 @@ export default function RootLayout() {
 /** 테마 색을 쓰는 스택 (설정·검색 화면 헤더 포함) */
 function ThemedStack() {
   const theme = useTheme();
+  // 카드 결제 문자 자동 추가 (설정에서 켠 경우, APK에서만)
+  useSmsAutoImport();
   const { colors } = theme;
   return (
     <>

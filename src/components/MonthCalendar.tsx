@@ -5,8 +5,9 @@
 import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { buildWeeks } from '../lib/calendar';
+import { MAX_MARKS, parseMarks } from '../lib/dayMarks';
 import { formatNumber } from '../lib/money';
-import { type Theme, WEEKDAYS } from '../theme';
+import { dayColorValue, type Theme, WEEKDAYS } from '../theme';
 import { useStyles, useTheme } from '../lib/theme';
 
 interface Props {
@@ -15,6 +16,8 @@ interface Props {
   totals: Record<string, number>;
   /** 날짜별 이모지 (지출·수입 공용) */
   marks: Record<string, string>;
+  /** 날짜별 칸 배경색 키 (지출·수입 공용) */
+  colors: Record<string, string>;
   today: string;
   selectedDate: string | null;
   onPressDay: (date: string) => void;
@@ -25,7 +28,7 @@ interface Props {
 const dayColor = (t: Theme, weekday: number): string =>
   weekday === 0 ? t.colors.sunday : weekday === 6 ? t.colors.saturday : t.colors.text;
 
-function MonthCalendarImpl({ ym, totals, marks, today, selectedDate, onPressDay, onLongPressDay }: Props) {
+function MonthCalendarImpl({ ym, totals, marks, colors, today, selectedDate, onPressDay, onLongPressDay }: Props) {
   const theme = useTheme();
   const styles = useStyles(makeStyles);
   const weeks = useMemo(() => buildWeeks(ym), [ym]);
@@ -47,7 +50,9 @@ function MonthCalendarImpl({ ym, totals, marks, today, selectedDate, onPressDay,
             const isToday = c.date === today;
             const isSelected = c.date === selectedDate;
             const total = totals[c.date];
-            const mark = marks[c.date];
+            const markList = parseMarks(marks[c.date]);
+            const mark = markList.join('');
+            const bg = dayColorValue(colors[c.date]);
             const showTotal = (c.inMonth && c.date <= today) || total !== undefined;
             const numColor = c.inMonth ? dayColor(theme, c.weekday) : theme.colors.muted;
             return (
@@ -57,6 +62,8 @@ function MonthCalendarImpl({ ym, totals, marks, today, selectedDate, onPressDay,
                   styles.dayCell,
                   isToday && !circle && styles.todayCell,
                   isSelected && !(isToday && !circle) && styles.selectedCell,
+                  // 날짜 색은 오늘·선택 배경보다 우선 (오늘 테두리는 그대로 남는다). 시트에서 고른 색이 바로 보이게.
+                  bg ? { backgroundColor: bg } : null,
                 ]}
                 onPress={() => onPressDay(c.date)}
                 onLongPress={() => onLongPressDay(c.date)}
@@ -74,8 +81,11 @@ function MonthCalendarImpl({ ym, totals, marks, today, selectedDate, onPressDay,
                     {c.day}
                   </Text>
                 </View>
-                <Text style={[styles.mark, !c.inMonth && styles.markOut]} numberOfLines={1}>
-                  {mark ?? ''}
+                <Text
+                  style={[styles.mark, markList.length >= MAX_MARKS && styles.markSmall, !c.inMonth && styles.markOut]}
+                  numberOfLines={1}
+                >
+                  {mark}
                 </Text>
                 {showTotal ? (
                   <Text
@@ -130,6 +140,8 @@ const makeStyles = (t: Theme) => {
     dayNum: { fontSize: circle ? 15 : 16, fontWeight: '600' },
     // 이모지 칸은 비어 있어도 높이를 차지해서 합계 위치가 흔들리지 않게 한다
     mark: { fontSize: 15, lineHeight: 20, height: 20 },
+    // 이모지가 꽉 차면(3개) 칸 폭을 넘지 않게 조금 작게
+    markSmall: { fontSize: 12 },
     markOut: { opacity: 0.4 },
     dayTotal: { marginTop: 2, fontSize: 11, color: t.colors.text, paddingHorizontal: 2 },
   });

@@ -1,5 +1,5 @@
 /**
- * 하단 탭: 지출 / 수입 / 통계.
+ * 하단 탭: 지출 / 수입 / 예산 / 통계.
  */
 import { Tabs } from 'expo-router';
 import { Text, type ColorValue } from 'react-native';
@@ -25,6 +25,7 @@ export default function TabLayout() {
     >
       <Tabs.Screen name="index" options={{ title: '지출', tabBarIcon: icon('−') }} />
       <Tabs.Screen name="income" options={{ title: '수입', tabBarIcon: icon('+') }} />
+      <Tabs.Screen name="budget" options={{ title: '예산', tabBarIcon: icon('₩') }} />
       <Tabs.Screen name="stats" options={{ title: '통계', tabBarIcon: icon('◔') }} />
     </Tabs>
   );

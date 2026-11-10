@@ -210,3 +210,26 @@ export function themeById(id: string | null | undefined): Theme {
 }
 
 export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'] as const;
+
+/** 날짜 칸 배경색 (DB에는 키만 저장). 반투명이라 밝은·어두운 테마 모두에서 글자가 읽힌다. */
+export const DAY_COLORS = {
+  red: 'rgba(239, 83, 80, 0.30)',
+  orange: 'rgba(255, 152, 0, 0.30)',
+  yellow: 'rgba(255, 214, 0, 0.35)',
+  green: 'rgba(102, 187, 106, 0.30)',
+  mint: 'rgba(38, 198, 218, 0.28)',
+  blue: 'rgba(66, 133, 244, 0.28)',
+  purple: 'rgba(171, 71, 188, 0.28)',
+  pink: 'rgba(240, 98, 146, 0.28)',
+} as const;
+
+export type DayColorKey = keyof typeof DAY_COLORS;
+export const DAY_COLOR_KEYS = Object.keys(DAY_COLORS) as DayColorKey[];
+
+/**
+ * 저장된 색 키를 실제 색으로 바꾼다. 모르는 키면 undefined.
+ * @param key 저장된 색 키
+ */
+export function dayColorValue(key: string | null | undefined): string | undefined {
+  return key && key in DAY_COLORS ? DAY_COLORS[key as DayColorKey] : undefined;
+}
