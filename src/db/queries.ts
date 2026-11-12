@@ -333,9 +333,103 @@ export async function deleteCategory(db: SqlDb, id: number): Promise<void> {
 
 /**
  * 결제수단 목록 (숨김 제외).
+ * @param db DB
+ * @param includeId 숨겼더라도 함께 넣을 결제수단 id (수정 중인 거래가 쓰고 있는 것)
  */
-export async function getPaymentMethods(db: SqlDb): Promise<PaymentMethod[]> {
-  return db.all<PaymentMethod>('SELECT * FROM payment_methods WHERE hidden = 0 ORDER BY sort, id');
+export async function getPaymentMethods(db: SqlDb, includeId?: number | null): Promise<PaymentMethod[]> {
+  return db.all<PaymentMethod>('SELECT * FROM payment_methods WHERE hidden = 0 OR id IS ? ORDER BY sort, id', [
+    includeId ?? -1,
+  ]);
+}
+
+/**
+ * 보이는 결제수단 중에 같은 이름이 있으면 오류. 앞뒤 공백을 지운 이름을 돌려준다.
+ * @param exceptId 이름을 바꾸는 중이면 그 결제수단 id
+ */
+async function checkPaymentMethodName(db: SqlDb, name: string, exceptId?: number): Promise<string> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('결제수단 이름을 입력하세요');
+  const dup = await db.first<{ id: number }>(
+    'SELECT id FROM payment_methods WHERE hidden = 0 AND name = ? AND id IS NOT ?',
+    [trimmed, exceptId ?? null],
+  );
+  if (dup) throw new Error(`'${trimmed}' 결제수단이 이미 있습니다`);
+  return trimmed;
+}
+
+/**
+ * 결제수단을 추가한다. 숨긴 것 중에 같은 이름이 있으면 그것을 다시 보이게 하고 맨 뒤로 옮긴다.
+ * @param db DB
+ * @param name 이름
+ * @returns 결제수단 id
+ */
+export async function addPaymentMethod(db: SqlDb, name: string): Promise<number> {
+  const trimmed = await checkPaymentMethodName(db, name);
+  const nextSort = '(SELECT COALESCE(MAX(sort), -1) + 1 FROM payment_methods WHERE hidden = 0)';
+  const hidden = await db.first<{ id: number }>('SELECT id FROM payment_methods WHERE hidden = 1 AND name = ? ORDER BY id LIMIT 1', [
+    trimmed,
+  ]);
+  if (hidden) {
+    await db.run(`UPDATE payment_methods SET hidden = 0, sort = ${nextSort} WHERE id = ?`, [hidden.id]);
+    return hidden.id;
+  }
+  const r = await db.run(`INSERT INTO payment_methods (name, sort) VALUES (?, ${nextSort})`, [trimmed]);
+  return r.lastInsertRowId;
+}
+
+/**
+ * 결제수단 이름을 바꾼다.
+ */
+export async function renamePaymentMethod(db: SqlDb, id: number, name: string): Promise<void> {
+  const trimmed = await checkPaymentMethodName(db, name, id);
+  await db.run('UPDATE payment_methods SET name = ? WHERE id = ?', [trimmed, id]);
+}
+
+/**
+ * 결제수단으로 입력된 거래 수 (할부는 원거래 1건).
+ */
+export async function countPaymentMethodUsage(db: SqlDb, id: number): Promise<number> {
+  const r = await db.first<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM transactions WHERE kind != 'installment_part' AND payment_method_id = ?",
+    [id],
+  );
+  return r?.n ?? 0;
+}
+
+/**
+ * 결제수단을 지운다. 쓴 거래가 있으면 과거 내역에 이름이 남도록 숨기기만 하고, 없으면 정말 지운다.
+ * @returns 'hidden' | 'deleted'
+ */
+export async function deletePaymentMethod(db: SqlDb, id: number): Promise<'hidden' | 'deleted'> {
+  const r = await db.first<{ n: number }>('SELECT COUNT(*) AS n FROM transactions WHERE payment_method_id = ?', [id]);
+  if ((r?.n ?? 0) > 0) {
+    await db.run('UPDATE payment_methods SET hidden = 1 WHERE id = ?', [id]);
+    return 'hidden';
+  }
+  await db.run('DELETE FROM payment_methods WHERE id = ?', [id]);
+  return 'deleted';
+}
+
+/**
+ * 내역(제목) 자동완성: 입력한 글자가 들어간 예전 내역.
+ * 그 글자로 시작하는 것 먼저, 그다음 많이 쓴 순, 최근에 쓴 순.
+ * @param db DB
+ * @param type 지출/수입
+ * @param query 입력 중인 내역
+ * @param limit 최대 개수
+ */
+export async function suggestTitles(db: SqlDb, type: TxType, query: string, limit = 6): Promise<string[]> {
+  const q = query.trim().replace(/[%_]/g, '');
+  if (!q) return [];
+  const rows = await db.all<{ title: string }>(
+    `SELECT title FROM transactions
+     WHERE type = ? AND kind != 'installment_part' AND title LIKE ? AND title != ?
+     GROUP BY title
+     ORDER BY (title LIKE ?) DESC, COUNT(*) DESC, MAX(date || ' ' || time) DESC, title
+     LIMIT ?`,
+    [type, `%${q}%`, query.trim(), `${q}%`, limit],
+  );
+  return rows.map((r) => r.title);
 }
 
 /**

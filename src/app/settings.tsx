@@ -1,5 +1,5 @@
 /**
- * 설정: 테마, 백업·복원, 카드 문자 자동 추가, 카테고리 추가·수정·삭제와 "기본 제외" 설정.
+ * 설정: 테마, 백업·복원, 카드 문자 자동 추가, 결제수단 추가·수정·삭제, 카테고리 추가·수정·삭제와 "기본 제외" 설정.
  */
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
@@ -7,14 +7,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   countTransactions,
   getCategories,
+  getPaymentMethods,
   getSetting,
   setCategoryDefaultExcluded,
   THEME_SETTING_KEY,
   type Category,
+  type PaymentMethod,
   type TxType,
 } from '../db/queries';
 import { useDb } from '../hooks/useDb';
 import { CategoryEditModal, type CategoryEditTarget } from '../components/CategoryEditModal';
+import { PaymentMethodEditModal, type PaymentMethodEditTarget } from '../components/PaymentMethodEditModal';
 import { SmsSettings } from '../components/SmsSettings';
 import { getLastBackupAt, pickAndRestoreBackup, saveBackup } from '../lib/backupFile';
 import { bumpDataVersion, useDataVersion } from '../lib/dataVersion';
@@ -34,6 +37,8 @@ export default function SettingsScreen() {
   const [type, setType] = useState<TxType>('expense');
   const [categories, setCategories] = useState<Category[]>([]);
   const [catEdit, setCatEdit] = useState<CategoryEditTarget | null>(null);
+  const [payments, setPayments] = useState<PaymentMethod[]>([]);
+  const [payEdit, setPayEdit] = useState<PaymentMethodEditTarget | null>(null);
   const [lastBackup, setLastBackup] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupResult, setBackupResult] = useState<string | null>(null);
@@ -108,6 +113,12 @@ export default function SettingsScreen() {
       .catch((e) => log.error('카테고리 조회 실패', e));
   }, [db, type, version]);
 
+  useEffect(() => {
+    getPaymentMethods(db)
+      .then(setPayments)
+      .catch((e) => log.error('결제수단 조회 실패', e));
+  }, [db, version]);
+
   const byId = new Map(categories.map((c) => [c.id, c]));
   const sorted = [...categories].sort((a, b) => {
     const ka = a.parent_id === null ? [a.sort, a.id, -1] : [byId.get(a.parent_id)?.sort ?? 0, a.parent_id, a.sort];
@@ -142,6 +153,20 @@ export default function SettingsScreen() {
 
       <Text style={styles.section}>카드 문자 자동 추가</Text>
       <SmsSettings />
+
+      <Text style={styles.section}>결제수단</Text>
+      <Text style={styles.help}>이름을 누르면 이름 바꾸기·삭제입니다. 쓴 내역이 있는 결제수단은 삭제해도 예전 내역에 이름이 남습니다.</Text>
+      {payments.map((p) => (
+        <View key={p.id} style={styles.row}>
+          <Pressable style={styles.nameButton} onPress={() => setPayEdit({ mode: 'edit', method: p })} accessibilityLabel={`${p.name} 수정`}>
+            <Text style={styles.name}>{p.name}</Text>
+          </Pressable>
+        </View>
+      ))}
+      <Pressable style={[styles.button, styles.buttonSecondary, { marginTop: 12 }]} onPress={() => setPayEdit({ mode: 'add' })}>
+        <Text style={[styles.buttonText, styles.buttonSecondaryText]}>+ 결제수단 추가</Text>
+      </Pressable>
+      <PaymentMethodEditModal target={payEdit} onClose={() => setPayEdit(null)} />
 
       <Text style={styles.section}>카테고리</Text>
       <Text style={styles.help}>

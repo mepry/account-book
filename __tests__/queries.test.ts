@@ -5,6 +5,11 @@ import type { SqlDb } from '../src/db/adapter';
 import {
   addBenefitType,
   addCategory,
+  addPaymentMethod,
+  countPaymentMethodUsage,
+  deletePaymentMethod,
+  renamePaymentMethod,
+  suggestTitles,
   countCategoryUsage,
   deleteCategory,
   renameCategory,
@@ -466,4 +471,57 @@ test('카테고리 삭제: 소분류 거래는 대분류로, 대분류 거래(�
   expect(left.some((x) => x.id === top || x.id === sub2)).toBe(false);
   // 거래는 하나도 지워지지 않았다
   expect(await db.first<{ n: number }>("SELECT COUNT(*) AS n FROM transactions WHERE kind != 'installment_part'")).toEqual({ n: 4 });
+});
+
+test('결제수단 추가·이름 바꾸기: 맨 뒤에 붙기, 중복·빈 이름 막기', async () => {
+  const id = await addPaymentMethod(db, '  신한카드  ');
+  const list = await getPaymentMethods(db);
+  expect(list.map((p) => p.name)).toEqual(['현금', '카드', '신한카드']);
+  expect(list.find((p) => p.id === id)?.sort).toBe(2);
+  await expect(addPaymentMethod(db, '신한카드')).rejects.toThrow('이미 있습니다');
+  await expect(addPaymentMethod(db, '  ')).rejects.toThrow('이름을 입력하세요');
+
+  await renamePaymentMethod(db, id, '신한 체크');
+  expect((await getPaymentMethods(db)).find((p) => p.id === id)?.name).toBe('신한 체크');
+  await expect(renamePaymentMethod(db, id, '신한 체크')).resolves.toBeUndefined();
+  await expect(renamePaymentMethod(db, id, '현금')).rejects.toThrow('이미 있습니다');
+});
+
+test('결제수단 삭제: 안 쓴 것은 지우고, 쓴 것은 숨겨서 예전 내역 이름 유지', async () => {
+  const unused = await addPaymentMethod(db, '안쓰는카드');
+  expect(await deletePaymentMethod(db, unused)).toBe('deleted');
+  expect(await db.first('SELECT id FROM payment_methods WHERE id = ?', [unused])).toBeNull();
+
+  const used = await addPaymentMethod(db, '신한카드');
+  const tx = await saveTransaction(db, { ...base, paymentMethodId: used, amount: 30000, installmentMonths: 3, tags: [] });
+  expect(await countPaymentMethodUsage(db, used)).toBe(1);
+  expect(await deletePaymentMethod(db, used)).toBe('hidden');
+  expect((await getPaymentMethods(db)).some((p) => p.id === used)).toBe(false);
+  // 수정 중인 거래가 쓰면 숨긴 것도 목록에 들어간다
+  expect((await getPaymentMethods(db, used)).some((p) => p.id === used)).toBe(true);
+  expect((await getTransactionForEdit(db, tx))?.paymentMethodId).toBe(used);
+  const parts = await getMonthInstallments(db, 'expense', '2026-11', true);
+  expect(parts[0]?.payment).toBe('신한카드');
+
+  // 같은 이름으로 다시 추가하면 숨긴 것이 다시 보인다
+  expect(await addPaymentMethod(db, '신한카드')).toBe(used);
+  expect((await getPaymentMethods(db)).map((p) => p.name)).toEqual(['현금', '카드', '신한카드']);
+});
+
+test('내역 자동완성: 부분 일치, 시작 일치 먼저, 많이 쓴 순, 같은 제목·다른 종류 제외, 할부는 한 번', async () => {
+  const add = (title: string, type: 'expense' | 'income' = 'expense', extra: Partial<TxInput> = {}) =>
+    saveTransaction(db, { ...base, title, type, tags: [], ...extra });
+  await add('아이스 커피');
+  await add('아이스 커피');
+  await add('커피빈');
+  await add('스타벅스 커피');
+  await add('커피 원두', 'expense', { amount: 30000, installmentMonths: 3 });
+  await add('커피 판매', 'income');
+  await add('편의점');
+
+  expect(await suggestTitles(db, 'expense', '커피')).toEqual(['커피 원두', '커피빈', '아이스 커피', '스타벅스 커피']);
+  expect(await suggestTitles(db, 'expense', '커피빈')).toEqual([]);
+  expect(await suggestTitles(db, 'income', '커피')).toEqual(['커피 판매']);
+  expect(await suggestTitles(db, 'expense', '  ')).toEqual([]);
+  expect(await suggestTitles(db, 'expense', '%')).toEqual([]);
 });

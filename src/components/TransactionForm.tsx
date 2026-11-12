@@ -1,6 +1,7 @@
 /**
  * 거래 입력/수정 폼 (모달).
- * 날짜·시간, 금액(자체 숫자 키패드, 00/000/0000 키, 자동 콤마), 내역/상세/메모, 대>소 카테고리, 결제수단 + 할부,
+ * 날짜·시간, 금액(자체 숫자 키패드, 00/000/0000 키, 자동 콤마), 내역(예전 비슷한 내역 자동완성)/상세/메모,
+ * 대>소 카테고리, 결제수단(+ 새 결제수단) + 할부,
  * 태그 자동완성(삭제한 태그는 메모 뒤로 옮김). 삭제는 날짜 내역 시트에서 길게 눌러서 한다.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -20,6 +21,7 @@ import {
 } from 'react-native';
 import {
   addBenefitType,
+  addPaymentMethod,
   getBenefitTypes,
   getCategories,
   getPaymentMethods,
@@ -27,6 +29,7 @@ import {
   saveTransaction,
   searchTags,
   suggestCategories,
+  suggestTitles,
   type BenefitType,
   type Category,
   type PaymentMethod,
@@ -64,6 +67,8 @@ interface BenefitRow {
 
 /** 혜택 선택창의 "+ 새 혜택" 항목 값 */
 const NEW_BENEFIT = -1;
+/** 결제수단 선택창의 "+ 새 결제수단" 항목 값 */
+const NEW_PAYMENT = -1;
 
 let rowKey = 0;
 
@@ -111,6 +116,11 @@ export function TransactionForm({ type, target, onClose }: Props) {
   const [majorId, setMajorId] = useState<number | null>(null);
   const [minorId, setMinorId] = useState<number | null>(null);
   const [paymentId, setPaymentId] = useState<number | null>(null);
+  const [newPaymentOpen, setNewPaymentOpen] = useState(false);
+  const [newPaymentName, setNewPaymentName] = useState('');
+  /** 내역 입력칸에 포커스가 있는지 (있을 때만 비슷한 예전 내역 목록을 보여준다) */
+  const [titleFocused, setTitleFocused] = useState(false);
+  const [titleSuggestions, setTitleSuggestions] = useState<string[]>([]);
   const [months, setMonths] = useState(1);
   /** 폼에는 체크박스가 없고, 카테고리 기본 제외 반영·수정 시 기존 값 보존용으로만 쓴다 */
   const [excluded, setExcluded] = useState(false);
@@ -160,6 +170,12 @@ export function TransactionForm({ type, target, onClose }: Props) {
       }
       const tx = await getTransactionForEdit(db, target.id);
       if (!alive || !tx) return;
+      // 숨긴(삭제한) 결제수단을 쓴 거래여도 이름이 보이도록 같이 불러온다
+      if (tx.paymentMethodId !== null && !pays.some((p) => p.id === tx.paymentMethodId)) {
+        const withHidden = await getPaymentMethods(db, tx.paymentMethodId);
+        if (!alive) return;
+        setPayments(withHidden);
+      }
       const cat = cats.find((c) => c.id === tx.categoryId);
       setEditId(tx.id);
       setDate(tx.date);
@@ -196,6 +212,45 @@ export function TransactionForm({ type, target, onClose }: Props) {
       clearTimeout(timer);
     };
   }, [db, type, title, target]);
+
+  // 내역 자동완성: 입력 중일 때 잠깐 뒤에 비슷한 예전 내역을 찾는다
+  useEffect(() => {
+    if (!target || !titleFocused || !title.trim()) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      suggestTitles(db, type, title)
+        .then((r) => alive && setTitleSuggestions(r))
+        .catch((e) => log.error('내역 자동완성 조회 실패', e));
+    }, 150);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [db, type, title, titleFocused, target]);
+
+  /**
+   * 자동완성 목록에서 내역을 고른다.
+   * @param value 고른 내역
+   */
+  const pickTitle = (value: string): void => {
+    setTitle(value);
+    setTitleSuggestions([]);
+    titleRef.current?.blur();
+  };
+
+  /** 새 결제수단을 만들고 바로 선택한다. */
+  const createPaymentMethod = async (): Promise<void> => {
+    try {
+      const id = await addPaymentMethod(db, newPaymentName);
+      setPayments(await getPaymentMethods(db, id));
+      setPaymentId(id);
+      bumpDataVersion();
+      setNewPaymentOpen(false);
+    } catch (e) {
+      log.error('결제수단 추가 실패', e);
+      Alert.alert('결제수단을 추가하지 못했습니다', e instanceof Error ? e.message : String(e));
+    }
+  };
 
   /** 카테고리 하나를 고르면 대분류·소분류를 함께 정한다 (null = 없음). */
   const pickCategory = (categoryId: number | null): void => {
@@ -324,6 +379,7 @@ export function TransactionForm({ type, target, onClose }: Props) {
 
   const label = type === 'expense' ? '지출' : '수입';
   const visibleSuggestions = tagInput.replace(/^#/, '').trim() ? suggestions : [];
+  const visibleTitleSuggestions = titleFocused && title.trim() ? titleSuggestions : [];
   const majorName = majorId !== null ? byId.get(majorId)?.name : undefined;
   const minorName = minorId !== null ? byId.get(minorId)?.name : undefined;
   const categoryText = majorName ? (minorName ? `${majorName} > ${minorName}` : majorName) : '없음';
@@ -376,14 +432,34 @@ export function TransactionForm({ type, target, onClose }: Props) {
               />
             ) : null}
             <Row label={`${label}내역`}>
-              <TextInput
-                ref={titleRef}
-                style={styles.input}
-                value={title}
-                onChangeText={setTitle}
-                // 다른 칸을 누르면 키패드는 접는다
-                onFocus={() => setKeypadOpen(false)}
-              />
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  ref={titleRef}
+                  style={[styles.input, styles.noFlex]}
+                  value={title}
+                  onChangeText={setTitle}
+                  // 다른 칸을 누르면 키패드는 접는다
+                  onFocus={() => {
+                    setKeypadOpen(false);
+                    setTitleFocused(true);
+                  }}
+                  onBlur={() => setTitleFocused(false)}
+                />
+                {visibleTitleSuggestions.length > 0 ? (
+                  <View style={styles.titleList}>
+                    {visibleTitleSuggestions.map((s, i) => (
+                      <Pressable
+                        key={s}
+                        style={[styles.titleItem, i > 0 && styles.titleItemBorder]}
+                        onPress={() => pickTitle(s)}
+                        accessibilityLabel={`${s} 선택`}
+                      >
+                        <HighlightText text={s} query={title.trim()} />
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
             </Row>
             <Row label="상세">
               <TextInput style={styles.input} value={detail} placeholder="선택" placeholderTextColor={theme.colors.subText} onChangeText={setDetail} />
@@ -506,10 +582,28 @@ export function TransactionForm({ type, target, onClose }: Props) {
       <OptionPicker
         visible={picker === 'payment'}
         title="결제수단"
-        options={[{ label: '없음', value: null }, ...payments.map((p) => ({ label: p.name, value: p.id as number | null }))]}
+        options={[
+          { label: '없음', value: null },
+          ...payments.map((p) => ({ label: p.name, value: p.id as number | null })),
+          { label: '+ 새 결제수단', value: NEW_PAYMENT },
+        ]}
         selected={paymentId}
-        onSelect={setPaymentId}
+        onSelect={(v) => {
+          if (v === NEW_PAYMENT) {
+            setNewPaymentName('');
+            setNewPaymentOpen(true);
+          } else setPaymentId(v);
+        }}
         onClose={() => setPicker(null)}
+      />
+      <NameDialog
+        visible={newPaymentOpen}
+        title="새 결제수단"
+        value={newPaymentName}
+        placeholder="예) 신한카드"
+        onChange={setNewPaymentName}
+        onCancel={() => setNewPaymentOpen(false)}
+        onSubmit={() => void createPaymentMethod()}
       />
       <OptionPicker
         visible={pickingRow !== undefined}
@@ -528,33 +622,15 @@ export function TransactionForm({ type, target, onClose }: Props) {
         }}
         onClose={() => setBenefitPickerKey(null)}
       />
-      <Modal
+      <NameDialog
         visible={newBenefitKey !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setNewBenefitKey(null)}
-      >
-        <View style={styles.backdrop}>
-          <View style={styles.dialog}>
-            <Text style={[styles.dialogTitle, styles.noFlex]}>새 혜택</Text>
-            <View style={styles.body}>
-              <TextInput
-                style={[styles.input, styles.noFlex]}
-                value={newBenefitName}
-                placeholder="예) 카카오포인트"
-                placeholderTextColor={theme.colors.subText}
-                autoFocus
-                onChangeText={setNewBenefitName}
-                onSubmitEditing={createBenefitType}
-              />
-            </View>
-            <View style={styles.buttons}>
-              <Button text="취소" onPress={() => setNewBenefitKey(null)} />
-              <Button text="추가" onPress={createBenefitType} />
-            </View>
-          </View>
-        </View>
-      </Modal>
+        title="새 혜택"
+        value={newBenefitName}
+        placeholder="예) 카카오포인트"
+        onChange={setNewBenefitName}
+        onCancel={() => setNewBenefitKey(null)}
+        onSubmit={() => void createBenefitType()}
+      />
       <OptionPicker
         visible={picker === 'months'}
         title="할부"
@@ -585,6 +661,64 @@ function Box({ text, onPress, flex }: { text: string; onPress: () => void; flex:
         {text}
       </Text>
     </Pressable>
+  );
+}
+
+/**
+ * 이름 하나를 입력받는 작은 창 (새 혜택, 새 결제수단).
+ */
+function NameDialog(props: {
+  visible: boolean;
+  title: string;
+  value: string;
+  placeholder: string;
+  onChange: (text: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  const theme = useTheme();
+  const styles = useStyles(makeStyles);
+  return (
+    <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onCancel}>
+      <View style={styles.backdrop}>
+        <View style={styles.dialog}>
+          <Text style={[styles.dialogTitle, styles.noFlex]}>{props.title}</Text>
+          <View style={styles.body}>
+            <TextInput
+              style={[styles.input, styles.noFlex]}
+              value={props.value}
+              placeholder={props.placeholder}
+              placeholderTextColor={theme.colors.subText}
+              autoFocus
+              onChangeText={props.onChange}
+              onSubmitEditing={props.onSubmit}
+            />
+          </View>
+          <View style={styles.buttons}>
+            <Button text="취소" onPress={props.onCancel} />
+            <Button text="추가" onPress={props.onSubmit} />
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/**
+ * 입력한 글자 부분을 굵게 보여준다 (처음 나온 곳 한 군데).
+ * @param text 전체 글자
+ * @param query 굵게 할 글자
+ */
+function HighlightText({ text, query }: { text: string; query: string }) {
+  const styles = useStyles(makeStyles);
+  const at = query ? text.indexOf(query) : -1;
+  if (at < 0) return <Text style={styles.titleItemText}>{text}</Text>;
+  return (
+    <Text style={styles.titleItemText} numberOfLines={1}>
+      {text.slice(0, at)}
+      <Text style={styles.titleItemMatch}>{text.slice(at, at + query.length)}</Text>
+      {text.slice(at + query.length)}
+    </Text>
   );
 }
 
@@ -641,6 +775,18 @@ const makeStyles = (t: Theme) =>
       paddingVertical: 10,
       alignItems: 'center',
     },
+    // 내역 자동완성 목록
+    titleList: {
+      marginTop: 4,
+      borderWidth: 1,
+      borderColor: t.colors.border,
+      borderRadius: 3,
+      backgroundColor: t.colors.surface,
+    },
+    titleItem: { paddingHorizontal: 10, paddingVertical: 10 },
+    titleItemBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: t.colors.border },
+    titleItemText: { fontSize: 15, color: t.colors.text },
+    titleItemMatch: { fontWeight: '700', color: t.colors.primary },
     benefitRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     removeRow: { paddingHorizontal: 4 },
     removeRowText: { fontSize: 16, color: t.colors.subText },
