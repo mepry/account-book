@@ -3,6 +3,7 @@
  * 할부금은 따로 저장하지 않고 지출에 입력한 할부 분할 건(getMonthInstallments)을 그대로 쓴다.
  */
 import type { SqlDb } from './adapter';
+import type { CategoryItem } from './queries';
 
 export type BudgetKind = 'fixed' | 'budget';
 
@@ -40,6 +41,26 @@ export async function getBudgetItems(db: SqlDb, ym: string): Promise<BudgetItem[
      WHERE b.ym = ?
      ORDER BY b.kind, b.sort, COALESCE(pc.sort, c.sort), c.sort, b.id`,
     [`${ym}-%`, ym],
+  );
+}
+
+/**
+ * 예산 항목 하나의 사용액에 들어간 지출 목록 (최신순). 조건은 getBudgetItems의 사용액과 같아 합계가 spent와 같다.
+ * @param db DB
+ * @param item 예산 항목 (ym·category_id 사용)
+ */
+export async function getBudgetItemTransactions(db: SqlDb, item: Pick<BudgetItem, 'ym' | 'category_id'>): Promise<CategoryItem[]> {
+  return db.all<CategoryItem>(
+    `SELECT l.id, COALESCE(l.parent_id, l.id) AS edit_id, l.date, l.title, l.detail, l.amount, c.name AS category,
+            l.installment_months, l.installment_seq, l.excluded
+     FROM v_ledger l
+     LEFT JOIN categories c ON c.id = l.category_id
+     WHERE l.type = 'expense' AND l.kind != 'installment_part' AND l.date LIKE ?
+       AND (l.category_id = ?
+            OR (l.category_id IN (SELECT id FROM categories WHERE parent_id = ?)
+                AND l.category_id NOT IN (SELECT category_id FROM budget_items WHERE ym = ?)))
+     ORDER BY l.date DESC, l.time DESC, l.id DESC`,
+    [`${item.ym}-%`, item.category_id, item.category_id, item.ym],
   );
 }
 

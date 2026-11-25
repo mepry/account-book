@@ -26,11 +26,13 @@ import {
   getCategories,
   getPaymentMethods,
   getMonthInstallments,
+  getMonthlyCategoryTotals,
   getMonthlyTotals,
   getTagTotals,
   getTitleTotals,
   getTransactionForEdit,
   saveTransaction,
+  parseExcludeWords,
   searchTransactions,
   setDayColor,
   getDayColors,
@@ -524,4 +526,64 @@ test('내역 자동완성: 부분 일치, 시작 일치 먼저, 많이 쓴 순, 
   expect(await suggestTitles(db, 'income', '커피')).toEqual(['커피 판매']);
   expect(await suggestTitles(db, 'expense', '  ')).toEqual([]);
   expect(await suggestTitles(db, 'expense', '%')).toEqual([]);
+});
+
+test('월·대분류별 합계: 소분류는 대분류로 묶고 미분류는 따로', async () => {
+  const cats = await db.all<{ id: number; name: string }>("SELECT id, name FROM categories WHERE type = 'expense'");
+  const cat = Object.fromEntries(cats.map((c) => [c.name, c.id]));
+  await saveTransaction(db, { ...base, tags: [], categoryId: cat['택시'], amount: 8000 });
+  await saveTransaction(db, { ...base, tags: [], categoryId: cat['교통비'], amount: 2000 });
+  await saveTransaction(db, { ...base, tags: [], amount: 500 });
+  await saveTransaction(db, { ...base, tags: [], categoryId: cat['택시'], amount: 700, date: '2026-12-01' });
+  const rows = await getMonthlyCategoryTotals(db, 'expense', '2026-11', '2026-12', false);
+  expect(rows.map((r) => [r.ym, r.name, r.total])).toEqual([
+    ['2026-11', '교통비', 10000],
+    ['2026-11', '미분류', 500],
+    ['2026-12', '교통비', 700],
+  ]);
+});
+
+test('내역(title) 필터: 같은 내역만, 빈 내역은 (내역 없음)으로', async () => {
+  await saveTransaction(db, { ...base, tags: [], title: '뮤지컬', amount: 1000 });
+  await saveTransaction(db, { ...base, tags: [], title: ' 뮤지컬 ', amount: 2000 });
+  await saveTransaction(db, { ...base, tags: [], title: '점심', amount: 3000 });
+  await saveTransaction(db, { ...base, tags: [], title: '', amount: 4000 });
+  const sum = async (title: string) =>
+    (await getCategoryItems(db, 'expense', 'all', '2026-11-01', '2026-11-30', false, { title })).reduce((s, i) => s + i.amount, 0);
+  expect(await sum('뮤지컬')).toBe(3000);
+  expect(await sum('(내역 없음)')).toBe(4000);
+});
+
+test('제외 검색어 나누기: 띄어쓰기·쉼표, 앞 # 제거, 중복 제거', () => {
+  expect(parseExcludeWords('#교통, 택시  교통')).toEqual(['교통', '택시']);
+  expect(parseExcludeWords('  ')).toEqual([]);
+  expect(parseExcludeWords(undefined)).toEqual([]);
+});
+
+test('검색 제외어: 내역·상세·메모·태그 중 하나라도 들어 있으면 뺀다, 제외어만으로는 검색 안 함', async () => {
+  const add = (over: Partial<TxInput>) => saveTransaction(db, { ...base, title: '점심', detail: '', tags: [], ...over });
+  await add({ title: '점심', detail: '김밥' });
+  await add({ title: '점심', memo: '회사 근처' });
+  await add({ title: '점심', tags: ['회식'] });
+  await add({ title: '점심 회식' });
+  await add({ title: '점심' });
+  const count = async (f: SearchFilter) => (await searchTransactions(db, 'expense', f)).length;
+  expect(await count({ query: '점심' })).toBe(5);
+  expect(await count({ query: '점심', exclude: '김밥' })).toBe(4);
+  expect(await count({ query: '점심', exclude: '회식, 근처' })).toBe(2);
+  expect(await count({ query: '점심', exclude: '#회식' })).toBe(3);
+  expect(await count({ exclude: '김밥' })).toBe(0);
+});
+
+test('통계 제외어: 합계에서 빠지고, 할부는 모든 회차가 같이 빠진다', async () => {
+  await saveTransaction(db, { ...base, tags: [], title: '점심', amount: 10000 });
+  await saveTransaction(db, { ...base, tags: ['회식'], title: '저녁', amount: 30000 });
+  await saveTransaction(db, { ...base, tags: [], title: '노트북', memo: '회사 지원', amount: 300000, installmentMonths: 3 });
+  const total = async (exclude: string) =>
+    (await getCategoryItems(db, 'expense', 'all', '2026-01-01', '2027-12-31', false, { exclude })).reduce((s, i) => s + i.amount, 0);
+  expect(await total('')).toBe(340000);
+  expect(await total('회식')).toBe(310000);
+  expect(await total('회식 회사')).toBe(10000);
+  const monthly = await getMonthlyCategoryTotals(db, 'expense', '2026-11', '2027-01', false, { exclude: '회사' });
+  expect(monthly.reduce((s, r) => s + r.total, 0)).toBe(40000);
 });

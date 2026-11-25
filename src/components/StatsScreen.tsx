@@ -2,20 +2,21 @@
  * 통계 화면: 필터(카테고리·결제수단·검색어, 화면 전체에 적용), 기간(기본 이번 달, 버튼 → 월별/연별/사용자 지정),
  * 지출/수입, 제외 포함 토글,
  * 카테고리 도넛 차트(캡션 xx%, 누르면 상세 레이어) → 지출(수입)내역별 합계(헤더로 정렬)
- * → 최근 12개월 막대 차트(막대 누르면 그 달 카테고리별 레이어, 카테고리 누르면 내역 펼침).
+ * (내역 누르면 그 내역 거래 목록, 길게 누르면 전체 이름)
+ * → 최근 12개월 막대 차트(대분류 1·2·3위·etc 색으로 쌓음, 막대 누르면 그 달 카테고리별 레이어,
+ *   길게 누르면 순위별 금액 캡션).
  * 할부는 분할 건 기준 (v_ledger).
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { BarChart } from 'react-native-gifted-charts';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ALL_CATEGORIES,
   getCategories,
   getCategoryTotals,
   getMinorCategoryTotals,
-  getMonthlyTotals,
+  getMonthlyCategoryTotals,
   getPaymentMethods,
   getPaymentTotals,
   getPeriodTotal,
@@ -24,6 +25,7 @@ import {
   type CategoryItem,
   NO_PAYMENT_METHOD,
   type CategoryTotal,
+  type MonthCategoryTotal,
   type StatsFilter,
   type TitleTotal,
   type TxType,
@@ -34,7 +36,7 @@ import { useDataVersion } from '../lib/dataVersion';
 import { lastDayOfMonth, parseYmd, today as todayFn, ymd } from '../lib/date';
 import { log } from '../lib/logger';
 import { formatNumber, formatWon } from '../lib/money';
-import { average, median } from '../lib/stats';
+import { average, median, rankMonthCategories } from '../lib/stats';
 import type { Theme } from '../theme';
 import { useStyles, useTheme } from '../lib/theme';
 import { CategoryDetailSheet, type CategoryDetailTarget } from './CategoryDetailSheet';
@@ -44,7 +46,7 @@ import { KeywordFilterModal } from './KeywordFilterModal';
 import { MonthCategorySheet } from './MonthCategorySheet';
 import { DatePickerModal, OptionPicker, type Option } from './Pickers';
 import { TitleTotalsList } from './TitleTotalsList';
-import { TodayButton, TopBar } from './TopBar';
+import { TabScreen, TodayButton, TopBar } from './TopBar';
 import { TransactionForm, type FormTarget } from './TransactionForm';
 
 type Mode = 'month' | 'year' | 'custom';
@@ -87,6 +89,12 @@ function shiftYm(ym: string, delta: number): string {
   return `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, '0')}`;
 }
 
+/** 월별 막대 순위 이름 (1·2·3위, 나머지) */
+const RANK_LABELS = ['1위', '2위', '3위', 'etc'];
+
+/** 소수점 없이 반올림한 퍼센트 */
+const pct = (part: number, whole: number): number => (whole > 0 ? Math.round((part / whole) * 100) : 0);
+
 /** 큰 금액을 축 라벨용으로 줄인다. 예) 1250000 → 125만 */
 const shortWon = (v: number): string => (v >= 10000 ? `${formatNumber(Math.round(v / 10000))}만` : formatNumber(v));
 
@@ -123,13 +131,15 @@ export function StatsScreen() {
   });
   /** 막대를 눌러 연 달 (YYYY-MM) */
   const [barYm, setBarYm] = useState<string | null>(null);
+  /** 막대를 길게 눌러 순위 캡션을 보고 있는 달 (YYYY-MM) */
+  const [peekYm, setPeekYm] = useState<string | null>(null);
   /** 내역 이름 말풍선을 보는 동안 스크롤 잠금 */
   const [scrollLocked, setScrollLocked] = useState(false);
 
   /** 원형 차트 데이터: 세 기준을 한꺼번에 불러 둬서 기준을 바꿀 때 기다림·이전 차트 잔상이 없게 한다 */
   const [pieRows, setPieRows] = useState<Record<PieMode, CategoryTotal[]>>({ category: [], minor: [], payment: [] });
   const [pieMode, setPieMode] = useState<PieMode>('category');
-  const [monthly, setMonthly] = useState<Record<string, number>>({});
+  const [monthlyRows, setMonthlyRows] = useState<MonthCategoryTotal[]>([]);
   const [titles, setTitles] = useState<TitleTotal[]>([]);
   /** 기간 수입·지출 합계 (맨 아래 수입 − 지출) */
   const [net, setNet] = useState({ income: 0, expense: 0 });
@@ -180,7 +190,11 @@ export function StatsScreen() {
     return pickOptions[kind].find((o) => o.value === v)?.label ?? null;
   };
   const keyword = filter.keyword ?? '';
-  const hasFilter = filter.categoryId != null || filter.paymentMethodId != null || keyword !== '';
+  const exclude = filter.exclude ?? '';
+  const hasFilter = filter.categoryId != null || filter.paymentMethodId != null || keyword !== '' || exclude !== '';
+  /** 검색 칩 글자: 검색어 "…", 제외어는 앞에 − (예: “뮤지컬” −회식) */
+  const keywordChipText =
+    [keyword ? `“${keyword}”` : null, exclude ? `−${exclude}` : null].filter(Boolean).join(' ') || '검색 🔍';
 
   /** 지출/수입을 바꾼다. 카테고리는 종류마다 달라서 카테고리 필터는 푼다. */
   const changeType = (t: TxType): void => {
@@ -200,13 +214,13 @@ export function StatsScreen() {
         getMinorCategoryTotals(db, type, from, to, includeExcluded, filter),
         getPaymentTotals(db, type, from, to, includeExcluded, filter),
       ]),
-      getMonthlyTotals(db, type, months12[0], months12[11], includeExcluded, filter),
+      getMonthlyCategoryTotals(db, type, months12[0], months12[11], includeExcluded, filter),
       getTitleTotals(db, type, from, to, includeExcluded, filter),
     ])
       .then(([[category, minor, payment], m, t]) => {
         if (!alive) return;
         setPieRows({ category, minor, payment });
-        setMonthly(m);
+        setMonthlyRows(m);
         setTitles(t);
       })
       .catch((e) => log.error('통계 조회 실패', e));
@@ -282,13 +296,41 @@ export function StatsScreen() {
     }
     setMode(m);
   };
-  const barData = months12.map((ym) => ({
-    value: monthly[ym] ?? 0,
-    label: `${parseInt(ym.slice(5), 10)}월`,
-    frontColor: ym === endYm ? theme.colors.primary : theme.colors.muted,
-  }));
+  // 달마다 대분류 1·2·3위 + 나머지(etc). 색은 카테고리가 아니라 순위로 정한다
+  const ranks = useMemo(() => rankMonthCategories(monthlyRows), [monthlyRows]);
+  const rankColors = [theme.chartPalette[0], theme.chartPalette[1], theme.chartPalette[2], theme.colors.muted];
+  const stackData = months12.map((ym) => {
+    const r = ranks[ym];
+    const values = r ? [0, 1, 2].map((i) => r.top[i]?.total ?? 0).concat(r.etc) : [];
+    const stacks = values.map((value, i) => ({ value, color: rankColors[i] })).filter((st) => st.value > 0);
+    return {
+      // 내역이 없는 달도 막대 자리는 있어야 눌림·라벨 위치가 맞는다
+      stacks: stacks.length ? stacks : [{ value: 0, color: theme.colors.muted }],
+      label: `${parseInt(ym.slice(5), 10)}월`,
+      // 지금 보고 있는 기간의 마지막 달은 라벨을 강조한다
+      labelTextStyle:
+        ym === endYm
+          ? { fontSize: 10, color: theme.colors.primary, fontWeight: '700' as const }
+          : { fontSize: 10, color: theme.colors.subText },
+    };
+  });
+  const peekRank = peekYm ? ranks[peekYm] : undefined;
 
-  const monthValues = months12.map((ym) => monthly[ym] ?? 0);
+  /** 막대를 길게 누르면 순위 캡션을 띄우고, 캡션이 닫히지 않게 스크롤을 잠근다. */
+  const startBarPeek = (index: number): void => {
+    setPeekYm(months12[index]);
+    setScrollLocked(true);
+  };
+
+  /** 손가락을 떼면 캡션을 닫고 스크롤을 푼다. */
+  const endBarPeek = (): void => {
+    if (peekYm === null) return;
+    setPeekYm(null);
+    setScrollLocked(false);
+  };
+
+  const monthValues = months12.map((ym) => ranks[ym]?.total ?? 0);
+  const titlesTotal = titles.reduce((s, t) => s + t.total, 0);
   // 기간·필터가 바뀌면 내역 목록을 처음 개수로 되돌리기 위한 key (정렬도 기본으로)
   const listKey = `${type}|${from}|${to}|${includeExcluded}|${JSON.stringify(filter)}`;
 
@@ -301,7 +343,7 @@ export function StatsScreen() {
   const listTitle = type === 'expense' ? '지출내역' : '수입내역';
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    <TabScreen>
       {/* 기간 선택은 상단바에 두어 스크롤을 내려도 바로 바꿀 수 있게 한다 */}
       <TopBar title="통계" titleAccessory={<TodayButton onPress={goToday} />}>
         <View style={styles.period}>
@@ -348,10 +390,10 @@ export function StatsScreen() {
             );
           })}
           <FilterChip
-            text={keyword ? `“${keyword}”` : '검색 🔍'}
-            active={keyword !== ''}
+            text={keywordChipText}
+            active={keyword !== '' || exclude !== ''}
             onPress={() => setKeywordOpen(true)}
-            accessibilityLabel={`검색 필터${keyword ? ` ${keyword}` : ''}`}
+            accessibilityLabel={`검색 필터${keyword ? ` ${keyword}` : ''}${exclude ? `, 제외 ${exclude}` : ''}`}
           />
           {hasFilter ? (
             <Pressable style={styles.filterClear} hitSlop={6} onPress={() => setFilter({})} accessibilityLabel="필터 모두 해제">
@@ -400,15 +442,36 @@ export function StatsScreen() {
         <Text style={styles.section}>
           {listTitle} <Text style={styles.sectionCount}>{titles.length}개</Text>
         </Text>
-        <TitleTotalsList key={listKey} rows={titles} pageSize={5} onPeekChange={setScrollLocked} />
+        <TitleTotalsList
+          key={listKey}
+          rows={titles}
+          pageSize={5}
+          onPeekChange={setScrollLocked}
+          // 내역을 누르면 그 내역의 거래 목록 (카테고리별 합계 + 거래, 누르면 수정)
+          onPressRow={(r) =>
+            setDetail({
+              id: ALL_CATEGORIES,
+              name: r.name,
+              total: r.total,
+              percent: pct(r.total, titlesTotal),
+              color: theme.colors.primary,
+              extraFilter: { title: r.name },
+            })
+          }
+        />
+        {titles.length > 0 ? (
+          <Text style={styles.caption}>내역을 누르면 거래 목록, 길게 누르면 전체 이름을 볼 수 있어요</Text>
+        ) : null}
 
         {/* 월별 막대 차트 */}
         <Text style={styles.section}>월별 (최근 12개월)</Text>
         <View style={{ paddingLeft: 8 }}>
           <BarChart
-            data={barData}
-            // 막대를 누르면 그 달 카테고리별 레이어
+            stackData={stackData}
+            // 막대를 누르면 그 달 카테고리별 레이어, 길게 누르면 순위별 금액 캡션 (손을 떼면 닫힘)
             onPress={(_item: unknown, index: number) => setBarYm(months12[index])}
+            onLongPress={(_item: unknown, index: number) => startBarPeek(index)}
+            onPressOut={endBarPeek}
             width={width - 90}
             height={180}
             barWidth={Math.max(10, (width - 120) / 12 - 8)}
@@ -418,15 +481,44 @@ export function StatsScreen() {
             yAxisLabelWidth={44}
             formatYLabel={(v: string) => shortWon(Number(v))}
             yAxisTextStyle={{ fontSize: 10, color: theme.colors.subText }}
-            xAxisLabelTextStyle={{ fontSize: 10, color: theme.colors.subText }}
             yAxisThickness={0}
             xAxisColor={theme.colors.border}
             rulesColor={theme.colors.border}
           />
+          {peekYm ? (
+            <View style={styles.barPeek} pointerEvents="none">
+              <View style={styles.barPeekHeader}>
+                <Text style={styles.barPeekTitle}>
+                  {peekYm.slice(0, 4)}년 {parseInt(peekYm.slice(5), 10)}월
+                </Text>
+                <Text style={styles.barPeekTitle}>{formatWon(peekRank?.total ?? 0)}</Text>
+              </View>
+              {peekRank && peekRank.total !== 0 ? (
+                <>
+                  {peekRank.top.map((t, i) => (
+                    <PeekRow key={t.name} color={rankColors[i]} label={`${i + 1}. ${t.name}`} value={t.total} whole={peekRank.total} />
+                  ))}
+                  {peekRank.etc !== 0 ? (
+                    <PeekRow color={rankColors[3]} label="etc" value={peekRank.etc} whole={peekRank.total} />
+                  ) : null}
+                </>
+              ) : (
+                <Text style={styles.barPeekText}>내역이 없습니다</Text>
+              )}
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.legend}>
+          {RANK_LABELS.map((l, i) => (
+            <View key={l} style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: rankColors[i] }]} />
+              <Text style={styles.legendText}>{l}</Text>
+            </View>
+          ))}
         </View>
         <View style={styles.summary}>
           <Text style={styles.caption}>
-            {months12[0]} ~ {months12[11]} · 막대를 누르면 그 달 카테고리별로 볼 수 있어요
+            {months12[0]} ~ {months12[11]} · 막대를 누르면 그 달 카테고리별, 길게 누르면 1·2·3위 금액을 볼 수 있어요
           </Text>
           <View style={styles.summaryRow}>
             <SummaryItem label="합계" value={monthValues.reduce((s, v) => s + v, 0)} />
@@ -486,8 +578,8 @@ export function StatsScreen() {
       />
       <KeywordFilterModal
         visible={keywordOpen}
-        value={keyword}
-        onApply={(k) => setFilter((f) => ({ ...f, keyword: k }))}
+        value={{ keyword, exclude }}
+        onApply={(v) => setFilter((f) => ({ ...f, keyword: v.keyword, exclude: v.exclude }))}
         onClose={() => setKeywordOpen(false)}
       />
       <OptionPicker
@@ -521,7 +613,7 @@ export function StatsScreen() {
         onLongPressItem={deleteItem}
       />
       <TransactionForm type={type} target={form} onClose={() => setForm(null)} />
-    </SafeAreaView>
+    </TabScreen>
   );
 }
 
@@ -553,6 +645,22 @@ function FilterChip({
         {text}
       </Text>
     </Pressable>
+  );
+}
+
+/** 막대 순위 캡션 한 줄: 색 점 + 이름 + 금액(비율) */
+function PeekRow({ color, label, value, whole }: { color: string; label: string; value: number; whole: number }) {
+  const styles = useStyles(makeStyles);
+  return (
+    <View style={styles.barPeekRow}>
+      <View style={[styles.legendDot, { backgroundColor: color }]} />
+      <Text style={[styles.barPeekText, { flex: 1 }]} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={styles.barPeekText}>
+        {formatWon(value)} ({pct(value, whole)}%)
+      </Text>
+    </View>
   );
 }
 
@@ -598,7 +706,6 @@ function HeaderButton({
 
 const makeStyles = (t: Theme) =>
   StyleSheet.create({
-    safe: { flex: 1, backgroundColor: t.colors.header },
     // 상단바 바로 아래가 답답해 보이지 않게 위쪽 여백을 넉넉히 둔다
     segments: { flexDirection: 'row', padding: 6, paddingTop: 14, gap: 6 },
     segment: { flex: 1, paddingVertical: 10, borderRadius: t.radius, backgroundColor: t.colors.surface, alignItems: 'center' },
@@ -648,4 +755,25 @@ const makeStyles = (t: Theme) =>
     pieWrap: { alignItems: 'center', paddingVertical: 8 },
     empty: { textAlign: 'center', color: t.colors.subText, paddingVertical: 16 },
     caption: { fontSize: 12, color: t.colors.subText, paddingHorizontal: 16, paddingTop: 6 },
+    legend: { flexDirection: 'row', justifyContent: 'center', gap: 14, paddingTop: 8 },
+    legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    legendDot: { width: 10, height: 10, borderRadius: 5 },
+    legendText: { fontSize: 12, color: t.colors.subText },
+    // 막대를 길게 누르는 동안 차트 위에 띄우는 순위 캡션
+    barPeek: {
+      position: 'absolute',
+      top: 0,
+      left: 56,
+      right: 16,
+      backgroundColor: t.colors.text,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      gap: 4,
+      elevation: 6,
+    },
+    barPeekHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 },
+    barPeekTitle: { fontSize: 14, fontWeight: '700', color: t.colors.bg },
+    barPeekRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    barPeekText: { fontSize: 13, color: t.colors.bg },
   });

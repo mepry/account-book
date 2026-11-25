@@ -1,17 +1,23 @@
 /**
- * 통계 검색어 필터 입력 레이어. 태그·내역·상세·메모에서 찾을 검색어를 받는다.
+ * 통계 검색어 필터 입력 레이어. 태그·내역·상세·메모에서 찾을 검색어와, 들어 있으면 뺄 제외 검색어를 받는다.
  */
 import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { type Theme } from '../theme';
 import { useStyles, useTheme } from '../lib/theme';
 
+/** 검색어 + 제외 검색어 (빈 문자열 = 없음) */
+export interface KeywordValue {
+  keyword: string;
+  exclude: string;
+}
+
 interface Props {
   visible: boolean;
-  /** 지금 걸려 있는 검색어 */
-  value: string;
-  /** 적용 (빈 문자열 = 해제) */
-  onApply: (keyword: string) => void;
+  /** 지금 걸려 있는 값 */
+  value: KeywordValue;
+  /** 적용 (둘 다 빈 문자열 = 해제) */
+  onApply: (value: KeywordValue) => void;
   onClose: () => void;
 }
 
@@ -24,7 +30,7 @@ export function KeywordFilterModal({ visible, value, onApply, onClose }: Props) 
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={styles.dialog} onPress={() => undefined}>
-          {/* 열릴 때마다 새로 그려서 지금 검색어로 초기화한다 */}
+          {/* 열릴 때마다 새로 그려서 지금 값으로 초기화한다 */}
           {visible ? <Body value={value} onApply={onApply} onClose={onClose} /> : null}
         </Pressable>
       </Pressable>
@@ -33,16 +39,17 @@ export function KeywordFilterModal({ visible, value, onApply, onClose }: Props) 
 }
 
 /**
- * 모달 내용: 입력칸 + 지우기/적용.
+ * 모달 내용: 검색어·제외 검색어 입력칸 + 지우기/적용.
  */
 function Body({ value, onApply, onClose }: Omit<Props, 'visible'>) {
   const theme = useTheme();
   const styles = useStyles(makeStyles);
-  const [text, setText] = useState(value);
+  const [keyword, setKeyword] = useState(value.keyword);
+  const [exclude, setExclude] = useState(value.exclude);
 
-  /** 검색어를 적용하고 닫는다. */
-  const apply = (keyword: string): void => {
-    onApply(keyword.trim());
+  /** 값을 적용하고 닫는다. */
+  const apply = (v: KeywordValue): void => {
+    onApply({ keyword: v.keyword.trim(), exclude: v.exclude.trim() });
     onClose();
   };
 
@@ -50,23 +57,36 @@ function Body({ value, onApply, onClose }: Omit<Props, 'visible'>) {
     <>
       <Text style={styles.title}>검색 필터</Text>
       <View style={styles.body}>
+        <Text style={styles.label}>검색어</Text>
         <TextInput
           style={styles.input}
-          value={text}
-          onChangeText={setText}
+          value={keyword}
+          onChangeText={setKeyword}
           placeholder="예: 뮤지컬, 올리브영"
           placeholderTextColor={theme.colors.subText}
           autoFocus
           autoCapitalize="none"
           returnKeyType="search"
-          onSubmitEditing={() => apply(text)}
+          onSubmitEditing={() => apply({ keyword, exclude })}
         />
         <Text style={styles.hint}>태그·내역·상세·메모에서 찾아요</Text>
+        <Text style={[styles.label, styles.excludeLabel]}>제외 검색어</Text>
+        <TextInput
+          style={styles.input}
+          value={exclude}
+          onChangeText={setExclude}
+          placeholder="예: 회식 교통"
+          placeholderTextColor={theme.colors.subText}
+          autoCapitalize="none"
+          returnKeyType="search"
+          onSubmitEditing={() => apply({ keyword, exclude })}
+        />
+        <Text style={styles.hint}>띄어쓰기로 여러 개. 하나라도 들어 있으면 통계에서 빼요</Text>
         <View style={styles.actions}>
-          <Pressable style={[styles.button, styles.clear]} onPress={() => apply('')}>
+          <Pressable style={[styles.button, styles.clear]} onPress={() => apply({ keyword: '', exclude: '' })}>
             <Text style={styles.clearText}>지우기</Text>
           </Pressable>
-          <Pressable style={[styles.button, styles.applyButton]} onPress={() => apply(text)}>
+          <Pressable style={[styles.button, styles.applyButton]} onPress={() => apply({ keyword, exclude })}>
             <Text style={styles.applyText}>적용</Text>
           </Pressable>
         </View>
@@ -81,6 +101,8 @@ const makeStyles = (t: Theme) =>
     dialog: { backgroundColor: t.colors.bg, borderRadius: t.radius, overflow: 'hidden' },
     title: { backgroundColor: t.colors.header, color: t.colors.headerText, fontSize: 18, fontWeight: '700', padding: 16 },
     body: { padding: 16, gap: 8 },
+    label: { fontSize: 13, fontWeight: '700', color: t.colors.text },
+    excludeLabel: { marginTop: 8, color: t.colors.expense },
     input: {
       borderWidth: 1,
       borderColor: t.colors.border,

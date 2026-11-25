@@ -72,3 +72,36 @@ export function median(values: readonly number[]): number {
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 }
+
+/** 월·카테고리별 합계 한 줄 */
+export interface MonthCategoryRow {
+  ym: string;
+  name: string;
+  total: number;
+}
+
+/** 한 달 순위: 상위 카테고리들 + 나머지(etc) 합계 */
+export interface MonthRank {
+  top: { name: string; total: number }[];
+  etc: number;
+  total: number;
+}
+
+/**
+ * 달마다 카테고리 합계 상위 n개와 나머지(etc) 합계를 구한다. 0원 이하는 순위에 넣지 않는다 (etc에만 더함).
+ * @param rows 월·카테고리별 합계
+ * @param n 순위 개수 (기본 3)
+ */
+export function rankMonthCategories(rows: readonly MonthCategoryRow[], n = 3): Record<string, MonthRank> {
+  const byYm = new Map<string, MonthCategoryRow[]>();
+  for (const r of rows) byYm.set(r.ym, [...(byYm.get(r.ym) ?? []), r]);
+  const out: Record<string, MonthRank> = {};
+  for (const [ym, list] of byYm) {
+    const sorted = [...list].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'ko'));
+    const top = sorted.filter((r) => r.total > 0).slice(0, n);
+    const total = list.reduce((s, r) => s + r.total, 0);
+    const topSum = top.reduce((s, r) => s + r.total, 0);
+    out[ym] = { top: top.map((r) => ({ name: r.name, total: r.total })), etc: total - topSum, total };
+  }
+  return out;
+}

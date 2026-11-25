@@ -3,18 +3,27 @@
  * - 할부금: 지출에 입력한 할부의 이번 달 분할 건 (자동 연동). 막대는 회차 진행률.
  * - 고정지출·예산: 카테고리별 계획 금액. 막대는 그 달 실제 사용액 / 계획 금액.
  * 머리 줄을 누르면 아래로 펼쳐진다. 고정지출·예산은 지난 달 설정을 가져올 수 있다.
+ * 고정지출·예산 항목을 누르면 수정, 길게 누르면 그 항목 사용액에 들어간 지출 목록.
  */
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   copyBudgetItems,
   findPreviousBudgetMonth,
   getBudgetItems,
+  getBudgetItemTransactions,
   type BudgetItem,
   type BudgetKind,
 } from '../db/budget';
-import { getCategories, getDailyTotals, getMonthInstallments, type Category, type InstallmentItem } from '../db/queries';
+import {
+  getCategories,
+  getDailyTotals,
+  getMonthInstallments,
+  type Category,
+  type CategoryItem,
+  type InstallmentItem,
+} from '../db/queries';
+import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import { useDb } from '../hooks/useDb';
 import { bumpDataVersion, useDataVersion } from '../lib/dataVersion';
 import { today as todayFn } from '../lib/date';
@@ -23,8 +32,9 @@ import { formatWon } from '../lib/money';
 import { type Theme } from '../theme';
 import { useStyles, useTheme } from '../lib/theme';
 import { BudgetItemModal, KIND_LABELS, type BudgetEditTarget } from './BudgetItemModal';
-import { TodayButton, TopBar } from './TopBar';
+import { TabScreen, TodayButton, TopBar } from './TopBar';
 import { TransactionForm, type FormTarget } from './TransactionForm';
+import { TransactionListSheet } from './TransactionListSheet';
 
 type SectionKey = 'installment' | BudgetKind;
 
@@ -82,6 +92,23 @@ export function BudgetScreen() {
   const [open, setOpen] = useState<Record<SectionKey, boolean>>({ installment: false, fixed: false, budget: false });
   const [edit, setEdit] = useState<BudgetEditTarget | null>(null);
   const [form, setForm] = useState<FormTarget | null>(null);
+  const confirmDelete = useConfirmDelete();
+  /** 길게 눌러 지출 목록을 보고 있는 예산 항목 */
+  const [listItem, setListItem] = useState<BudgetItem | null>(null);
+  /** 그 항목의 지출 목록 (어느 항목 것인지 같이 들고 있어 이전 목록이 잠깐 보이지 않게 한다) */
+  const [listData, setListData] = useState<{ id: number; items: CategoryItem[] } | null>(null);
+
+  // 지출 목록: 수정·삭제 후(version)에도 다시 불러온다
+  useEffect(() => {
+    if (!listItem) return;
+    let alive = true;
+    getBudgetItemTransactions(db, listItem)
+      .then((items) => alive && setListData({ id: listItem.id, items }))
+      .catch((e) => log.error('예산 지출 목록 조회 실패', e));
+    return () => {
+      alive = false;
+    };
+  }, [db, listItem, version]);
 
   useEffect(() => {
     let alive = true;
@@ -157,7 +184,13 @@ export function BudgetScreen() {
             {list.map((item) => {
               const over = item.spent > item.amount;
               return (
-                <Pressable key={item.id} style={styles.item} onPress={() => setEdit({ mode: 'edit', item })}>
+                <Pressable
+                  key={item.id}
+                  style={styles.item}
+                  onPress={() => setEdit({ mode: 'edit', item })}
+                  // 길게 누르면 이 항목 사용액에 들어간 지출 목록
+                  onLongPress={() => setListItem(item)}
+                >
                   <View style={styles.headerRow}>
                     <Text style={styles.itemTitle} numberOfLines={1}>
                       › {item.category}
@@ -172,6 +205,7 @@ export function BudgetScreen() {
                 </Pressable>
               );
             })}
+            {list.length > 0 ? <Text style={styles.hint}>항목을 누르면 수정, 길게 누르면 지출 목록을 볼 수 있어요</Text> : null}
             <View style={styles.actions}>
               <Pressable style={styles.actionButton} onPress={() => setEdit({ mode: 'add', kind })}>
                 <Text style={styles.actionText}>+ {KIND_LABELS[kind]} 추가</Text>
@@ -189,7 +223,7 @@ export function BudgetScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    <TabScreen>
       <TopBar title="예산" titleAccessory={<TodayButton onPress={() => setYm(today.slice(0, 7))} />} />
       <ScrollView style={{ backgroundColor: theme.colors.bg }} contentContainerStyle={styles.content}>
         <View style={styles.controls}>
@@ -269,14 +303,23 @@ export function BudgetScreen() {
         usedCategoryIds={items.map((i) => i.category_id)}
         onClose={() => setEdit(null)}
       />
+      <TransactionListSheet
+        // 수정 폼이 열려 있는 동안은 내려 두어 두 모달이 겹치지 않게 한다
+        visible={listItem !== null && form === null}
+        title={listItem?.category ?? ''}
+        sub={listItem ? `${ymLabel(listItem.ym)} 사용 · 계획 ${formatWon(listItem.amount)}` : undefined}
+        items={listItem && listData?.id === listItem.id ? listData.items : null}
+        onClose={() => setListItem(null)}
+        onPressItem={(id) => setForm({ mode: 'edit', id })}
+        onLongPressItem={(it) => confirmDelete(it.edit_id, it.installment_seq !== null)}
+      />
       <TransactionForm type="expense" target={form} onClose={() => setForm(null)} />
-    </SafeAreaView>
+    </TabScreen>
   );
 }
 
 const makeStyles = (t: Theme) =>
   StyleSheet.create({
-    safe: { flex: 1, backgroundColor: t.colors.header },
     content: { paddingBottom: 24 },
     controls: { flexDirection: 'row', gap: 6, padding: 6, paddingTop: 14 },
     pill: { flex: 1, backgroundColor: t.colors.surface, borderRadius: t.radius, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
@@ -304,6 +347,15 @@ const makeStyles = (t: Theme) =>
     itemTitle: { flex: 1, fontSize: 15, color: t.colors.text },
     itemAmount: { fontSize: 15, fontWeight: '600', color: t.colors.text },
     caption: { fontSize: 12, color: t.colors.subText },
+    hint: {
+      fontSize: 12,
+      color: t.colors.subText,
+      paddingHorizontal: 14,
+      paddingTop: 8,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderColor: t.colors.border,
+      backgroundColor: t.colors.bg,
+    },
     barTrack: { height: 8, borderRadius: 4, backgroundColor: t.colors.border, overflow: 'hidden' },
     barFill: { height: 8, borderRadius: 4 },
     empty: { padding: 14, fontSize: 13, color: t.colors.subText, backgroundColor: t.colors.bg },

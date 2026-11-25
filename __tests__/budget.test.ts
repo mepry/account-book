@@ -4,6 +4,7 @@ import {
   deleteBudgetItem,
   findPreviousBudgetMonth,
   getBudgetItems,
+  getBudgetItemTransactions,
   saveBudgetItem,
 } from '../src/db/budget';
 import { deleteCategory, saveTransaction, suggestCategories, type TxInput } from '../src/db/queries';
@@ -142,4 +143,20 @@ test('통계: 하위카테고리별·결제수단별 합계와 조각 상세 필
     paymentMethodId: NO_PAYMENT_METHOD,
   });
   expect(none.map((i) => i.amount).sort((a, b) => a - b)).toEqual([1000, 5000]);
+});
+
+test('예산 항목 지출 목록: 합계가 사용액과 같다 (소분류 포함, 따로 항목 있는 소분류·할부 분할·다른 달 제외)', async () => {
+  await saveTransaction(db, tx({ categoryId: cat['택시'], amount: 8000, title: '택시' }));
+  await saveTransaction(db, tx({ categoryId: cat['대중교통'], amount: 1500, title: '버스', date: '2026-11-02', excluded: true }));
+  await saveTransaction(db, tx({ categoryId: cat['교통비'], amount: 3000, title: '주차', date: '2026-11-05' }));
+  await saveTransaction(db, tx({ categoryId: cat['교통비'], amount: 99999, date: '2026-10-31' }));
+  await saveTransaction(db, tx({ categoryId: cat['교통비'], amount: 30000, installmentMonths: 3 }));
+  await saveBudgetItem(db, { ym: '2026-11', kind: 'fixed', categoryId: cat['교통비'], amount: 100000 });
+  await saveBudgetItem(db, { ym: '2026-11', kind: 'budget', categoryId: cat['택시'], amount: 20000 });
+  for (const item of await getBudgetItems(db, '2026-11')) {
+    const list = await getBudgetItemTransactions(db, item);
+    expect(list.reduce((s, i) => s + i.amount, 0)).toBe(item.spent);
+  }
+  const major = (await getBudgetItems(db, '2026-11')).find((i) => i.category === '교통비')!;
+  expect((await getBudgetItemTransactions(db, major)).map((i) => i.title)).toEqual(['주차', '버스']);
 });

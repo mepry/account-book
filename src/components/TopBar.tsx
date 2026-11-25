@@ -3,10 +3,23 @@
  */
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { type Theme } from '../theme';
 import { useStyles } from '../lib/theme';
 
 export const TOP_BAR_HEIGHT = 56;
+
+/**
+ * 탭 화면 바깥 틀: 상태바 높이만큼 위를 띄운다 (배경은 상단바 색).
+ * SafeAreaView(네이티브)는 탭을 처음 열 때 첫 프레임에 여백 없이 그렸다가 다음 프레임에 여백을 붙여
+ * 화면이 살짝 올라갔다 내려가 보이므로, 첫 렌더부터 값이 있는 useSafeAreaInsets로 직접 띄운다.
+ * @param children 화면 내용
+ */
+export function TabScreen({ children }: { children: ReactNode }) {
+  const styles = useStyles(makeStyles);
+  const { top } = useSafeAreaInsets();
+  return <View style={[styles.screen, { paddingTop: top }]}>{children}</View>;
+}
 
 /**
  * 제목 + 제목 옆 버튼(선택) + 오른쪽 액션 버튼(선택) 상단바.
@@ -52,6 +65,7 @@ export function TodayButton({ onPress }: { onPress: () => void }) {
 
 const makeStyles = (t: Theme) =>
   StyleSheet.create({
+    screen: { flex: 1, backgroundColor: t.colors.header },
     today: { borderWidth: 1, borderColor: t.colors.headerText, borderRadius: 12, paddingHorizontal: 7, paddingVertical: 3 },
     todayText: { color: t.colors.headerText, fontSize: 12, fontWeight: '700' },
     bar: {

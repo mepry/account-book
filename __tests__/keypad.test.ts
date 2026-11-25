@@ -12,8 +12,12 @@ test('0 묶음 키로 한 번에 입력', () => {
   expect(press('1', '2', '0000')).toBe('120000');
 });
 
-test('비어 있을 때 0 키는 무시, 지우기·모두 지우기', () => {
-  expect(press('0', '00', '000', '0000')).toBe('');
+test('0원 입력 가능, 앞자리 0은 붙지 않음, 지우기·모두 지우기', () => {
+  expect(press('0')).toBe('0');
+  expect(press('0000')).toBe('0');
+  expect(press('0', '00', '000', '0000')).toBe('0');
+  expect(press('0', '5')).toBe('5');
+  expect(press('0', 'back')).toBe('');
   expect(press('3', '0', 'back')).toBe('3');
   expect(press('3', '0000', 'clear')).toBe('');
   expect(press('back')).toBe('');

@@ -5,7 +5,6 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   getDailyTotals,
   getDayColors,
@@ -32,7 +31,7 @@ import { DaySheet } from './DaySheet';
 import { InstallmentSection } from './InstallmentSection';
 import { MonthCalendar } from './MonthCalendar';
 import { DatePickerModal } from './Pickers';
-import { TodayButton, TopBar } from './TopBar';
+import { TabScreen, TodayButton, TopBar } from './TopBar';
 import { TransactionForm, type FormTarget } from './TransactionForm';
 
 /**
@@ -202,7 +201,7 @@ export function LedgerScreen({ type }: { type: TxType }) {
   const net = type === 'income' ? monthTotal - otherTotal : otherTotal - monthTotal;
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    <TabScreen>
       <TopBar title="가계부" titleAccessory={<TodayButton onPress={() => setYm(today.slice(0, 7))} />}>
         <Pressable style={styles.iconButton} hitSlop={8} onPress={() => router.push('/settings')} accessibilityLabel="설정">
           <Ionicons name="settings-outline" size={ICON_SIZE - 2} color={theme.colors.headerText} />
@@ -316,13 +315,12 @@ export function LedgerScreen({ type }: { type: TxType }) {
         onClose={() => setJumpOpen(false)}
       />
       <TransactionForm type={type} target={form} onClose={() => setForm(null)} />
-    </SafeAreaView>
+    </TabScreen>
   );
 }
 
 const makeStyles = (t: Theme) =>
   StyleSheet.create({
-    safe: { flex: 1, backgroundColor: t.colors.header },
     // 세 아이콘이 같은 크기의 칸 가운데에 오도록 한다
     iconButton: { width: ICON_SIZE + 6, height: ICON_SIZE + 6, alignItems: 'center', justifyContent: 'center' },
     // 상단바 바로 아래가 답답해 보이지 않게 위쪽 여백을 넉넉히 둔다

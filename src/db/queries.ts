@@ -783,10 +783,34 @@ const toLike = (keyword: string): string | null => {
   return q ? `%${q}%` : null;
 };
 
+/**
+ * 제외 검색어 입력을 단어 목록으로 나눈다 (띄어쓰기·쉼표로 구분, 앞 # 제거, 빈 값·중복 제거).
+ * 예) "#교통, 택시  교통" → ["교통", "택시"]
+ * @param text 입력값
+ */
+export function parseExcludeWords(text: string | null | undefined): string[] {
+  const words = (text ?? '')
+    .split(/[\s,]+/)
+    .map((w) => w.replace(/^#+/, '').replace(/[%_]/g, ''))
+    .filter(Boolean);
+  return [...new Set(words)];
+}
+
+/**
+ * 거래 행(alias)의 내역·상세·메모·태그 중 하나가 LIKE 패턴과 맞는지 보는 조건. 바인딩 4개.
+ * @param a transactions 테이블 alias
+ */
+const textMatchSql = (a: string): string =>
+  `(${a}.title LIKE ? OR ${a}.detail LIKE ? OR ${a}.memo LIKE ?
+    OR EXISTS (SELECT 1 FROM transaction_tags ${a}tt JOIN tags ${a}tg ON ${a}tg.id = ${a}tt.tag_id
+               WHERE ${a}tt.transaction_id = ${a}.id AND ${a}tg.name LIKE ?))`;
+
 /** 검색 조건. 값이 있는 것만 AND로 건다. */
 export interface SearchFilter {
   /** 내역·상세·메모·태그 검색어 (태그는 # 붙여도 됨) */
   query?: string;
+  /** 제외 검색어: 띄어쓰기·쉼표로 여러 개. 하나라도 내역·상세·메모·태그에 들어 있으면 결과에서 뺀다 */
+  exclude?: string;
   /** 시작일 YYYY-MM-DD (포함). from·to 둘 다 없으면 전체 기간 */
   from?: string | null;
   /** 종료일 YYYY-MM-DD (포함) */
@@ -807,9 +831,7 @@ export async function searchTransactions(db: SqlDb, type: TxType, filter: Search
   const params: SqlParam[] = [type];
   const like = filter.query ? toLike(filter.query) : null;
   if (like) {
-    parts.push(`AND (t.title LIKE ? OR t.detail LIKE ? OR t.memo LIKE ?
-            OR EXISTS (SELECT 1 FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id
-                       WHERE tt.transaction_id = t.id AND tg.name LIKE ?))`);
+    parts.push(`AND ${textMatchSql('t')}`);
     params.push(like, like, like, like);
   }
   if (filter.from) {
@@ -824,7 +846,12 @@ export async function searchTransactions(db: SqlDb, type: TxType, filter: Search
     parts.push('AND t.category_id IN (SELECT id FROM categories WHERE id = ? OR parent_id = ?)');
     params.push(filter.categoryId, filter.categoryId);
   }
+  // 제외 검색어만으로는 검색하지 않는다 (다른 조건으로 찾은 결과에서 빼는 용도)
   if (parts.length === 0) return [];
+  for (const w of parseExcludeWords(filter.exclude)) {
+    parts.push(`AND NOT ${textMatchSql('t')}`);
+    params.push(`%${w}%`, `%${w}%`, `%${w}%`, `%${w}%`);
+  }
   return db.all<SearchItem>(
     `SELECT t.id, t.date, t.time, t.amount, t.title, t.detail, t.memo,
             t.excluded, t.installment_months,
@@ -856,6 +883,10 @@ export interface StatsFilter {
   exactCategoryId?: number | null;
   /** 검색어: 태그·내역·상세·메모에서 찾는다 (앞의 # 무시) */
   keyword?: string;
+  /** 제외 검색어: 띄어쓰기·쉼표로 여러 개. 하나라도 태그·내역·상세·메모에 들어 있으면 뺀다 */
+  exclude?: string;
+  /** 이 내역(title)인 것만. 빈 내역은 '(내역 없음)' (getTitleTotals의 이름과 같음) */
+  title?: string | null;
 }
 
 /**
@@ -879,17 +910,20 @@ function filterSql(f: StatsFilter = {}): { sql: string; params: SqlParam[] } {
     parts.push('AND l.category_id = ?');
     params.push(f.exactCategoryId);
   }
+  if (f.title != null) {
+    parts.push("AND COALESCE(NULLIF(trim(l.title), ''), '(내역 없음)') = ?");
+    params.push(f.title);
+  }
   const like = f.keyword ? toLike(f.keyword) : null;
   if (like) {
     // 할부 분할 건은 메모·태그가 총액 행에 있으므로 총액 행(root)에서 찾는다
-    parts.push(
-      `AND COALESCE(l.parent_id, l.id) IN (
-         SELECT ft.id FROM transactions ft
-         WHERE ft.title LIKE ? OR ft.detail LIKE ? OR ft.memo LIKE ?
-            OR EXISTS (SELECT 1 FROM transaction_tags ftt JOIN tags ftg ON ftg.id = ftt.tag_id
-                       WHERE ftt.transaction_id = ft.id AND ftg.name LIKE ?))`,
-    );
+    parts.push(`AND COALESCE(l.parent_id, l.id) IN (SELECT ft.id FROM transactions ft WHERE ${textMatchSql('ft')})`);
     params.push(like, like, like, like);
+  }
+  // 제외 검색어도 총액 행(root) 기준: 할부면 모든 회차가 같이 빠진다
+  for (const w of parseExcludeWords(f.exclude)) {
+    parts.push(`AND COALESCE(l.parent_id, l.id) NOT IN (SELECT xt.id FROM transactions xt WHERE ${textMatchSql('xt')})`);
+    params.push(`%${w}%`, `%${w}%`, `%${w}%`, `%${w}%`);
   }
   return { sql: parts.join(' '), params };
 }
@@ -1107,6 +1141,42 @@ export async function getMonthlyTotals(
     [type, fromYm, toYm, ...f.params],
   );
   return Object.fromEntries(rows.map((r) => [r.ym, r.total]));
+}
+
+/** 월·대분류별 합계 한 줄 */
+export interface MonthCategoryTotal {
+  ym: string;
+  /** 대분류 id (null = 미분류) */
+  id: number | null;
+  name: string;
+  total: number;
+}
+
+/**
+ * 월·대분류별 합계 (통계 월별 막대의 1·2·3위 / etc).
+ * @param fromYm 시작 월 YYYY-MM
+ * @param toYm 끝 월 YYYY-MM
+ * @param filter 통계 필터
+ */
+export async function getMonthlyCategoryTotals(
+  db: SqlDb,
+  type: TxType,
+  fromYm: string,
+  toYm: string,
+  includeExcluded: boolean,
+  filter: StatsFilter = {},
+): Promise<MonthCategoryTotal[]> {
+  const f = filterSql(filter);
+  return db.all<MonthCategoryTotal>(
+    `SELECT substr(l.date, 1, 7) AS ym, COALESCE(pc.id, c.id) AS id, COALESCE(pc.name, c.name, '미분류') AS name,
+            SUM(l.amount) AS total
+     FROM v_ledger l
+     LEFT JOIN categories c ON c.id = l.category_id
+     LEFT JOIN categories pc ON pc.id = c.parent_id
+     WHERE l.type = ? AND substr(l.date, 1, 7) BETWEEN ? AND ? ${excludedClause(includeExcluded)} ${f.sql}
+     GROUP BY 1, 2, 3 ORDER BY ym, total DESC, name`,
+    [type, fromYm, toYm, ...f.params],
+  );
 }
 
 /** 같은 내역(title)끼리 묶은 합계 */

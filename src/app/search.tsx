@@ -1,5 +1,6 @@
 /**
  * 검색 화면: 검색어(내역·메모·태그) + 기간 + 카테고리로 지출(또는 수입)을 찾는다.
+ * 제외 검색어(여러 개)가 하나라도 들어 있는 거래는 결과에서 뺀다.
  * 기간 기본값은 전체 기간, 카테고리 기본값은 전체. 항목을 누르면 수정 폼, 길게 누르면 삭제 확인.
  */
 import { Stack, useLocalSearchParams } from 'expo-router';
@@ -86,6 +87,8 @@ export default function SearchScreen() {
   const today = todayFn();
 
   const [query, setQuery] = useState('');
+  /** 제외 검색어 (띄어쓰기·쉼표로 여러 개) */
+  const [exclude, setExclude] = useState('');
   const [period, setPeriod] = useState<Period>('all');
   const [custom, setCustom] = useState({ from: `${today.slice(0, 7)}-01`, to: today });
   const [dateEdit, setDateEdit] = useState<'from' | 'to' | null>(null);
@@ -121,7 +124,7 @@ export default function SearchScreen() {
     const active = !!q.replace(/^#/, '') || from !== null || categoryId !== null;
     let alive = true;
     const timer = setTimeout(() => {
-      searchTransactions(db, type, { query: q, from, to, categoryId })
+      searchTransactions(db, type, { query: q, exclude, from, to, categoryId })
         .then((items) => alive && setResult({ active, items }))
         .catch((e) => log.error('검색 실패', e));
     }, DEBOUNCE_MS);
@@ -129,7 +132,7 @@ export default function SearchScreen() {
       alive = false;
       clearTimeout(timer);
     };
-  }, [db, type, query, from, to, categoryId, version]);
+  }, [db, type, query, exclude, from, to, categoryId, version]);
 
   /** 기간을 고른다. 직접 지정이면 시작일부터 고르게 한다. */
   const pickPeriod = (p: Period): void => {
@@ -154,6 +157,20 @@ export default function SearchScreen() {
         returnKeyType="search"
         clearButtonMode="while-editing"
       />
+      <View style={[styles.excludeRow, exclude.trim() !== '' && styles.chipOn]}>
+        <Text style={styles.excludeLabel}>제외</Text>
+        <TextInput
+          style={styles.excludeInput}
+          value={exclude}
+          onChangeText={setExclude}
+          placeholder="이 단어가 들어간 건 빼기 (띄어쓰기로 여러 개)"
+          placeholderTextColor={theme.colors.subText}
+          autoCapitalize="none"
+          returnKeyType="search"
+          clearButtonMode="while-editing"
+          accessibilityLabel="제외 검색어"
+        />
+      </View>
       <View style={styles.filters}>
         <Pressable
           style={[styles.chip, period !== 'all' && styles.chipOn]}
@@ -277,6 +294,20 @@ const makeStyles = (t: Theme) =>
       color: t.colors.text,
       backgroundColor: t.colors.surface,
     },
+    excludeRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginHorizontal: 10,
+      marginTop: -2,
+      marginBottom: 8,
+      paddingLeft: 12,
+      borderWidth: 1,
+      borderColor: t.colors.border,
+      borderRadius: t.radius,
+    },
+    excludeLabel: { fontSize: 13, fontWeight: '700', color: t.colors.expense },
+    excludeInput: { flex: 1, paddingVertical: 8, paddingRight: 12, fontSize: 15, color: t.colors.text },
     filters: { flexDirection: 'row', gap: 8, paddingHorizontal: 10, paddingBottom: 8 },
     chip: {
       flex: 1,

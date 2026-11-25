@@ -1,6 +1,6 @@
 /**
  * 이름별 합계 목록: 헤더(이름/건수/금액)를 누르면 정렬, 30개씩 더 보기 (pageSize를 주면 이전/다음 페이지).
- * renderExpanded를 주면 줄을 눌렀을 때 바로 아래로 펼쳐지고, 다시 누르면 접힌다.
+ * renderExpanded를 주면 줄을 눌렀을 때 바로 아래로 펼쳐지고, 다시 누르면 접힌다 (onPressRow를 주면 줄 누르기를 그쪽으로 넘긴다).
  * 줄을 길게 누르고 있으면 잘린 이름 전체를 말풍선으로 보여준다.
  * 통계 화면 하단(지출내역)과 월별 막대 상세(카테고리별)에서 같이 쓴다.
  */
@@ -30,6 +30,8 @@ interface Props<T extends TotalsRow> {
   nameHeader?: string;
   /** 주면 줄을 눌러 펼치기/접기. 펼친 줄 아래에 그릴 내용 */
   renderExpanded?: (row: T) => ReactNode;
+  /** 주면 줄을 눌렀을 때 부른다 (renderExpanded가 없을 때) */
+  onPressRow?: (row: T) => void;
   /** 길게 눌러 전체 이름을 보는 중인지 (true면 부모 ScrollView 스크롤을 잠근다) */
   onPeekChange?: (peeking: boolean) => void;
   /** 주면 한 페이지에 이만큼씩 보여주고 이전/다음 페이지로 넘긴다 (없으면 30개씩 "더 보기") */
@@ -41,7 +43,14 @@ const rowKey = (r: TotalsRow): string => r.key ?? r.name;
 /**
  * 정렬 가능한 합계 목록. 목록이 바뀌면(기간·필터 변경) 부모가 key를 바꿔 처음 상태로 되돌린다.
  */
-export function TitleTotalsList<T extends TotalsRow>({ rows, nameHeader = '내역', renderExpanded, onPeekChange, pageSize }: Props<T>) {
+export function TitleTotalsList<T extends TotalsRow>({
+  rows,
+  nameHeader = '내역',
+  renderExpanded,
+  onPressRow,
+  onPeekChange,
+  pageSize,
+}: Props<T>) {
   const styles = useStyles(makeStyles);
   const [sort, setSort] = useState<TitleSort>(DEFAULT_SORT);
   const [shown, setShown] = useState(PAGE);
@@ -123,10 +132,10 @@ export function TitleTotalsList<T extends TotalsRow>({ rows, nameHeader = '내�
             >
               <Pressable
                 style={[styles.row, open && styles.rowOpen, peeking && styles.rowPressed]}
-                onPress={renderExpanded ? () => setOpenKey(open ? null : k) : undefined}
+                onPress={renderExpanded ? () => setOpenKey(open ? null : k) : onPressRow ? () => onPressRow(t) : undefined}
                 // 길게 누르고 있는 동안 잘린 이름 전체를 말풍선으로 보여준다
                 onLongPress={() => startPeek(k)}
-                accessibilityRole={renderExpanded ? 'button' : undefined}
+                accessibilityRole={renderExpanded || onPressRow ? 'button' : undefined}
                 accessibilityState={renderExpanded ? { expanded: open } : undefined}
                 accessibilityLabel={fullName}
               >

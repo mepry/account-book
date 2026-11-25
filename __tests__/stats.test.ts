@@ -1,7 +1,7 @@
 /**
  * 통계 계산 테스트: 평균·중간값, 내역 목록 정렬.
  */
-import { average, DEFAULT_SORT, median, nextSort, sortTitleTotals } from '../src/lib/stats';
+import { average, DEFAULT_SORT, median, nextSort, rankMonthCategories, sortTitleTotals } from '../src/lib/stats';
 
 test('평균은 원 단위 반올림, 빈 목록은 0', () => {
   expect(average([100, 200, 0])).toBe(100);
@@ -36,4 +36,27 @@ test('금액·건수·내역 정렬과 동점 처리 (금액 많은순 → 가�
   expect(names('count', false)).toEqual(['가', '다', '나']);
   expect(names('name', true)).toEqual(['가', '나', '다']);
   expect(names('name', false)).toEqual(['다', '나', '가']);
+});
+
+test('달마다 카테고리 상위 3개 + etc', () => {
+  const r = rankMonthCategories([
+    { ym: '2026-10', name: '식비', total: 500 },
+    { ym: '2026-10', name: '쇼핑', total: 300 },
+    { ym: '2026-10', name: '교통', total: 100 },
+    { ym: '2026-10', name: '문화', total: 200 },
+    { ym: '2026-10', name: '기타', total: 50 },
+    { ym: '2026-11', name: '식비', total: 100 },
+    { ym: '2026-11', name: '공짜', total: 0 },
+  ]);
+  expect(r['2026-10']).toEqual({
+    top: [
+      { name: '식비', total: 500 },
+      { name: '쇼핑', total: 300 },
+      { name: '문화', total: 200 },
+    ],
+    etc: 150,
+    total: 1150,
+  });
+  // 3개 이하면 etc 0, 0원 카테고리는 순위에서 빠짐
+  expect(r['2026-11']).toEqual({ top: [{ name: '식비', total: 100 }], etc: 0, total: 100 });
 });
